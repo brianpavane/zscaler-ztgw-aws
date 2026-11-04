@@ -13,7 +13,7 @@ make up ENV=<env>           # same, via make
 
 ## Packaging: what you fill in
 
-An environment (`<env>`, e.g. `zs2` or `prod`) is one Zscaler tenant. You
+An environment (`<env>`, e.g. `prod` or `dev`) is one Zscaler tenant. You
 provide:
 
 | File | Contents | Tracked in git? |
@@ -88,10 +88,10 @@ skipped with a message rather than failing.
 
 ```
 STACK                                    WORKSPACE                    RESOURCES
-02-ztgw                                  zs2                          6
-01-zia-url-policy                        zs2                          6
-03-account-greenfield@app1               zs2-app1                     27
-03-account-brownfield@core               zs2-core                     14
+02-ztgw                                  prod                         6
+01-zia-url-policy                        prod                         6
+03-account-greenfield@app1               prod-app1                    27
+03-account-brownfield@core               prod-core                    14
 ```
 
 ### `wire`
@@ -112,17 +112,17 @@ in a workload's tfvars to use only some of the gateway's AZs.
 Everything `deploy.sh` does can be done step by step:
 
 ```bash
-scripts/run.sh zs2 02-ztgw apply
-scripts/deploy.sh zs2 wire
-scripts/run.sh zs2 01-zia-url-policy apply
-scripts/run.sh zs2 03-account-greenfield@app1 plan
-scripts/run.sh zs2 03-account-greenfield@app1 apply
+scripts/run.sh prod 02-ztgw apply
+scripts/deploy.sh prod wire
+scripts/run.sh prod 01-zia-url-policy apply
+scripts/run.sh prod 03-account-greenfield@app1 plan
+scripts/run.sh prod 03-account-greenfield@app1 apply
 ```
 
 ## Unattended runs (CI)
 
 ```bash
-AUTO_APPROVE=1 scripts/deploy.sh zs2 up
+AUTO_APPROVE=1 scripts/deploy.sh prod up
 ```
 
 `AUTO_APPROVE=1` passes `-auto-approve` to every apply and destroy, and skips

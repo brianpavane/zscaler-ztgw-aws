@@ -4,7 +4,7 @@
 #
 #   scripts/run.sh <env> <stack>[@<instance>] <action> [extra terraform args...]
 #
-#   env     name of config/<env>.env (any name, e.g. zs2 or prod). Also used as the
+#   env     name of config/<env>.env (any name, e.g. prod or dev). Also used as the
 #           Terraform workspace (local state per env) and the tfvars file
 #           stacks/<stack>/env/<env>.tfvars.
 #   stack   directory under stacks/ (e.g. 01-zia-url-policy, zia-activate)

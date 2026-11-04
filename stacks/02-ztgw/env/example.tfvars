@@ -1,6 +1,6 @@
 # Phase 2 - Zero Trust Gateway
 #
-# Copy to env/<env>.tfvars (e.g. env/zs2.tfvars) -- the env name must match
+# Copy to env/<env>.tfvars (e.g. env/prod.tfvars) -- the env name must match
 # config/<env>.env. Real *.tfvars files are git-ignored; this file is not.
 
 region = "us-west-2"
@@ -9,8 +9,8 @@ region = "us-west-2"
 availability_zone_ids = ["usw2-az1", "usw2-az2", "usw2-az3"]
 
 # Defaults: gateway_name = ztgw-<env>-<region>, location_name = <gateway_name>-loc
-# gateway_name  = "ztgw-zs2-us-west-2"
-# location_name = "ztgw-zs2-us-west-2-loc"
+# gateway_name  = "ztgw-prod-us-west-2"
+# location_name = "ztgw-prod-us-west-2-loc"
 
 # Account group allowed on the gateway. Phase 3 outputs
 # public_cloud_account_id for each onboarded account; list them here.

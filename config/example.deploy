@@ -1,8 +1,8 @@
 # -----------------------------------------------------------------------------
 # What scripts/deploy.sh deploys for one environment.
 #
-#   cp config/example.deploy config/zs2.deploy
-#   scripts/deploy.sh zs2 up
+#   cp config/example.deploy config/prod.deploy
+#   scripts/deploy.sh prod up
 #
 # The file name (without .deploy) is the env name: the same as
 # config/<env>.env (credentials). Each selected stack needs its tfvars file.

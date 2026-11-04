@@ -46,7 +46,7 @@ trimmed and lower-cased.
 2. **Attach.** With `scripts/deploy.sh` this is automatic: the gateway's
    location is supplied by the wiring file. By hand, after Phase 2, set `location_names` to the gateway's location
    (`scripts/run.sh <env> 02-ztgw output location_name`, for example
-   `["ztgw-zs2-us-west-2-loc"]`) and apply. The rules become ENABLED, scoped only to
+   `["ztgw-prod-us-west-2-loc"]`) and apply. The rules become ENABLED, scoped only to
    that location, and activation runs.
 3. **Change lists.** Edit the lists and apply. Categories update in place and
    activation runs again.

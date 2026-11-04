@@ -1,6 +1,6 @@
 # Phase 1 - ZIA URL filtering policy
 #
-# Copy to env/<env>.tfvars (e.g. env/zs2.tfvars) -- the env name must match
+# Copy to env/<env>.tfvars (e.g. env/prod.tfvars) -- the env name must match
 # config/<env>.env. Real *.tfvars files are git-ignored; this file is not.
 
 name_prefix = "ztgw-prod"
@@ -23,7 +23,7 @@ default_action = "BLOCK"
 # location is supplied automatically (env/<env>.wiring.tfvars.json).
 # Without the gateway location the policy is staged (rules DISABLED).
 # Set these only to override or add locations.
-# location_names = ["ztgw-zs2-us-west-2-loc"]
+# location_names = ["ztgw-prod-us-west-2-loc"]
 location_ids = []
 
 rule_order_start = 1

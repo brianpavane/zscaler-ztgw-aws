@@ -51,22 +51,28 @@ profile for each account.
 
 ```bash
 # 1. Credentials and contents of the environment (file name = env name)
-cp config/example.env config/zs2.env && chmod 600 config/zs2.env
-cp config/example.deploy config/zs2.deploy
-$EDITOR config/zs2.env config/zs2.deploy
+cp config/example.env config/prod.env && chmod 600 config/prod.env
+cp config/example.deploy config/prod.deploy
+$EDITOR config/prod.env config/prod.deploy
 
 # 2. Inputs per stack (each has a commented example.tfvars)
-cp stacks/01-zia-url-policy/env/example.tfvars     stacks/01-zia-url-policy/env/zs2.tfvars
-cp stacks/02-ztgw/env/example.tfvars               stacks/02-ztgw/env/zs2.tfvars
-cp stacks/03-account-greenfield/env/example.tfvars stacks/03-account-greenfield/env/zs2-app1.tfvars
-$EDITOR stacks/*/env/zs2*.tfvars
+cp stacks/01-zia-url-policy/env/example.tfvars     stacks/01-zia-url-policy/env/prod.tfvars
+cp stacks/02-ztgw/env/example.tfvars               stacks/02-ztgw/env/prod.tfvars
+cp stacks/03-account-greenfield/env/example.tfvars stacks/03-account-greenfield/env/prod-app1.tfvars
+$EDITOR stacks/*/env/prod*.tfvars
 
 # 3. Deploy: gateway -> URL policy -> accounts, outputs wired automatically
-scripts/deploy.sh zs2 plan
-scripts/deploy.sh zs2 up
-scripts/deploy.sh zs2 status
-scripts/deploy.sh zs2 down        # reverse order, asks for confirmation
+scripts/deploy.sh prod plan
+scripts/deploy.sh prod up
+scripts/deploy.sh prod status
+scripts/deploy.sh prod down        # reverse order, asks for confirmation
 ```
+
+`prod` is only an example env name. Use any name (letters, digits, `-`,
+`_`), one per Zscaler tenant. It names the config and tfvars files, the
+Terraform workspace and the default gateway (`ztgw-<env>-<region>`). The
+Zscaler cloud comes from the credentials in `config/<env>.env`, not from the
+name.
 
 `deploy.sh` runs each stack through `scripts/run.sh` and passes the
 gateway's outputs (location, endpoint service, AZs, account group) to the
@@ -99,7 +105,7 @@ scripts/run.sh <env> <stack>[@<instance>] <action> [extra terraform args]
 - Loads the generated `env/<env>.wiring.tfvars.json` (gateway outputs) before
   the stack's tfvars, so tfvars values take precedence.
 - Uses Terraform workspace `<env>` and `stacks/<stack>/env/<env>.tfvars`, so
-  tenants on different clouds (e.g. env names `zs2` and `zs3`) keep separate
+  separate tenants (e.g. env names `prod` and `dev`) keep separate
   local state in the same checkout.
 - In Legacy mode, only the credentials for the products the stack uses
   (`zia`, `ztc`) are required.

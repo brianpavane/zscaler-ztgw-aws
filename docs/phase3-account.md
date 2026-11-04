@@ -215,13 +215,13 @@ Each account is an **instance** of a Phase 3 stack, with its own state and
 tfvars:
 
 ```bash
-# config/zs2.deploy
+# config/prod.deploy
 WORKLOADS="03-account-greenfield@app1 03-account-brownfield@core"
 
-# stacks/03-account-greenfield/env/zs2-app1.tfvars
-# stacks/03-account-brownfield/env/zs2-core.tfvars
-scripts/deploy.sh zs2 up                              # all of them
-scripts/run.sh zs2 03-account-greenfield@app1 plan    # or one at a time
+# stacks/03-account-greenfield/env/prod-app1.tfvars
+# stacks/03-account-brownfield/env/prod-core.tfvars
+scripts/deploy.sh prod up                              # all of them
+scripts/run.sh prod 03-account-greenfield@app1 plan    # or one at a time
 ```
 
 The gateway values (`region`, `endpoint_service_name`,

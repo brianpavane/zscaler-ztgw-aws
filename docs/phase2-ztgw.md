@@ -13,8 +13,8 @@ Stack: [`stacks/02-ztgw`](../stacks/02-ztgw) · Client:
 | Gateway location (made by the gateway) | created by Zscaler; deleted by `ztgw.py` on destroy | `<gateway>-loc` |
 
 `<env>` is the Terraform workspace, which `scripts/run.sh` sets to the env
-name (`zs2`, `zs3`). So the default gateway names are `ztgw-zs2-us-west-2`
-and `ztgw-zs3-us-west-2`.
+name (e.g. `prod`, `dev`). So the default gateway names are `ztgw-prod-us-west-2`
+and `ztgw-dev-us-west-2`.
 
 ## Why there is a Python client
 
@@ -92,11 +92,11 @@ applied, it writes the outputs into each later stack's
 `env/<env>.wiring.tfvars.json` (see [deployment.md](deployment.md)). By hand:
 
 ```bash
-scripts/run.sh zs2 02-ztgw apply
-scripts/run.sh zs2 02-ztgw output location_name
-# → put it in stacks/01-zia-url-policy/env/zs2.tfvars:
-#     location_names = ["ztgw-zs2-us-west-2-loc"]
-scripts/run.sh zs2 01-zia-url-policy apply   # policy now ENABLED for the gateway
+scripts/run.sh prod 02-ztgw apply
+scripts/run.sh prod 02-ztgw output location_name
+# → put it in stacks/01-zia-url-policy/env/prod.tfvars:
+#     location_names = ["ztgw-prod-us-west-2-loc"]
+scripts/run.sh prod 01-zia-url-policy apply   # policy now ENABLED for the gateway
 ```
 
 Use `location_names` rather than `location_id` in Phase 1. ZIA looks the

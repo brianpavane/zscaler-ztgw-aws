@@ -30,7 +30,7 @@ shell: ## shellcheck + wrapper tests
 security: ## checkov static security scan
 	@scripts/qa.sh checkov
 
-# Environment orchestration (scripts/deploy.sh). Usage: make up ENV=zs2
+# Environment orchestration (scripts/deploy.sh). Usage: make up ENV=prod
 plan: ## deploy.sh ENV=<env> plan
 	@scripts/deploy.sh "$(ENV)" plan
 

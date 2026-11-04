@@ -9,7 +9,7 @@ mock_provider "aws" {
 }
 
 variables {
-  name                  = "ztgw-zs2-us-west-2-wl"
+  name                  = "ztgw-prod-us-west-2-wl"
   availability_zone_ids = ["usw2-az1", "usw2-az2", "usw2-az3"]
   endpoint_service_name = "com.amazonaws.vpce.us-west-2.vpce-svc-0123456789abcdef0"
 }
