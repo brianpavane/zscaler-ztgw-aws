@@ -118,7 +118,7 @@ expect_not_log "ENV ZSCALER_CLIENT_ID" "legacy unsets stale OneAPI credentials"
 write_env t1 "$LEGACY_ENV" 644
 run_wrapper t1 s1 plan
 expect_rc 1 "world-readable env file rejected"
-expect_out "chmod 600" "permission fix suggested"
+expect_out "has mode 644; run: chmod 600" "actual mode reported (GNU and BSD stat)"
 
 write_env t1 "ZSCALER_AUTH_MODE=oneapi
 ZSCALER_CLIENTID=typo"

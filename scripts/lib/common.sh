@@ -41,9 +41,11 @@ require_terraform() {
     fi
 }
 
-# Octal permission bits of a file, portable across macOS (BSD stat) and Linux.
+# Octal permission bits of a file, portable across Linux (GNU stat) and macOS
+# (BSD stat). GNU must be tried first: `stat -f` exists in GNU stat too, but
+# means "file system status" and succeeds with unrelated output.
 file_mode() {
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
 }
 
 # load_env_file FILE
