@@ -1,0 +1,32 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfstate.d/
+crash.log
+crash.*.log
+*.tfplan
+tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Per-environment inputs and credentials (examples are tracked)
+*.tfvars
+*.tfvars.json
+!**/env/example.tfvars
+config/*.env
+!config/example.env
+
+# Local tooling / OS
+.venv/
+__pycache__/
+.DS_Store
+.idea/
+.vscode/
+
+# Lock files are committed for stacks (root modules) only
+modules/**/.terraform.lock.hcl

@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+#
+# test_run.sh - tests for scripts/run.sh and scripts/lib/common.sh.
+#
+# A stub terraform binary records its arguments and the Zscaler/AWS
+# environment it was started with, so the wrapper's behaviour (auth-mode
+# switching, credential hygiene, var-file/workspace handling, destroy-time
+# activation) is verified without a tenant.
+#
+#   tests/scripts/test_run.sh
+#
+# Compatible with macOS bash 3.2.
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+PASS=0
+FAIL=0
+
+# --- sandbox: a copy of the repo's scripts + a minimal stack layout ---------
+mkdir -p "$WORK/repo/scripts/lib" "$WORK/repo/config" \
+         "$WORK/repo/stacks/s1/env" "$WORK/repo/stacks/zia-activate" "$WORK/bin"
+cp "$REPO_ROOT/scripts/run.sh" "$WORK/repo/scripts/run.sh"
+cp "$REPO_ROOT/scripts/lib/common.sh" "$WORK/repo/scripts/lib/common.sh"
+printf 'provider "zia" {}\n' > "$WORK/repo/stacks/s1/providers.tf"
+printf 'provider "zia" {}\n' > "$WORK/repo/stacks/zia-activate/providers.tf"
+printf 'name_prefix = "t"\n' > "$WORK/repo/stacks/s1/env/t1.tfvars"
+
+LOG="$WORK/tf.log"
+cat > "$WORK/bin/terraform" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "version" ]; then echo "Terraform v${STUB_TF_VERSION:-1.9.8}"; exit 0; fi
+{
+  printf 'ARGS:'; printf ' %s' "$@"; printf '\n'
+  for v in ZSCALER_USE_LEGACY_CLIENT ZSCALER_CLIENT_ID ZSCALER_CLIENT_SECRET ZSCALER_VANITY_DOMAIN \
+           ZSCALER_CLOUD ZIA_USERNAME ZIA_PASSWORD ZIA_API_KEY ZIA_CLOUD AWS_PROFILE; do
+    if [ -n "${!v+x}" ]; then printf 'ENV %s=%s\n' "$v" "${!v}"; fi
+  done
+} >> "$STUB_LOG"
+exit 0
+STUB
+chmod +x "$WORK/bin/terraform"
+
+ONEAPI_ENV='ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENT_ID=cid
+ZSCALER_CLIENT_SECRET="s3cr3t value"
+ZSCALER_VANITY_DOMAIN=acme
+ZSCALER_CLOUD=
+ZIA_USERNAME=stale-legacy-user
+ZIA_PASSWORD=stale
+ZIA_API_KEY=stale
+ZIA_CLOUD=zscalertwo   # inline comment
+AWS_PROFILE='
+
+LEGACY_ENV='ZSCALER_AUTH_MODE=legacy
+ZSCALER_CLIENT_ID=stale-oneapi-id
+ZIA_USERNAME=admin@acme.com
+ZIA_PASSWORD=pw
+ZIA_API_KEY=key
+ZIA_CLOUD=zscalerthree'
+
+write_env() { # name content [mode]
+    printf '%s\n' "$2" > "$WORK/repo/config/$1.env"
+    chmod "${3:-600}" "$WORK/repo/config/$1.env"
+}
+
+run_wrapper() {
+    : > "$LOG"
+    OUT="$(cd "$WORK" && PATH="$WORK/bin:$PATH" STUB_LOG="$LOG" \
+           env -u ZSCALER_CLIENT_ID -u ZIA_USERNAME -u AUTO_APPROVE \
+           "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+           bash "$WORK/repo/scripts/run.sh" "$@" 2>&1)"
+    RC=$?
+}
+
+ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '%s\n' "$OUT" | sed 's/^/       | /'; }
+
+expect_rc()        { if [ "$RC" -eq "$1" ]; then ok "$2"; else fail "$2 (rc=$RC, want $1)"; fi; }
+expect_out()       { if printf '%s' "$OUT" | grep -q -- "$1"; then ok "$2"; else fail "$2 (output lacks '$1')"; fi; }
+expect_log()       { if grep -q -- "$1" "$LOG"; then ok "$2"; else fail "$2 (log lacks '$1')"; cat "$LOG"; fi; }
+expect_not_log()   { if grep -q -- "$1" "$LOG"; then fail "$2 (log has '$1')"; cat "$LOG"; else ok "$2"; fi; }
+
+EXTRA_ENV=()
+
+echo "run.sh tests"
+
+# 1. usage
+run_wrapper
+expect_rc 1 "no arguments prints usage and fails"
+expect_out "scripts/run.sh <env> <stack> <action>" "usage text shown"
+
+# 2. OneAPI mode
+write_env t1 "$ONEAPI_ENV"
+run_wrapper t1 s1 plan
+expect_rc 0 "oneapi plan succeeds"
+expect_log "ENV ZSCALER_USE_LEGACY_CLIENT=false" "oneapi exports ZSCALER_USE_LEGACY_CLIENT=false"
+expect_log "ENV ZSCALER_CLIENT_SECRET=s3cr3t value" "quoted value is unquoted, spaces kept"
+expect_not_log "ENV ZIA_USERNAME" "oneapi unsets stale legacy credentials"
+expect_not_log "ENV ZSCALER_CLOUD" "empty ZSCALER_CLOUD is unset (production)"
+expect_not_log "ENV AWS_PROFILE" "empty AWS_PROFILE is unset"
+expect_log "workspace select -or-create=true t1" "workspace named after env"
+expect_log "-var-file=.*stacks/s1/env/t1.tfvars" "env tfvars passed"
+expect_not_log "ARGS:.*s3cr3t" "secret never on terraform command line"
+
+# 3. Legacy mode
+write_env t1 "$LEGACY_ENV"
+run_wrapper t1 s1 plan
+expect_rc 0 "legacy plan succeeds"
+expect_log "ENV ZSCALER_USE_LEGACY_CLIENT=true" "legacy exports ZSCALER_USE_LEGACY_CLIENT=true"
+expect_log "ENV ZIA_CLOUD=zscalerthree" "legacy exports ZIA_CLOUD"
+expect_not_log "ENV ZSCALER_CLIENT_ID" "legacy unsets stale OneAPI credentials"
+
+# 4. Validation failures
+write_env t1 "$LEGACY_ENV" 644
+run_wrapper t1 s1 plan
+expect_rc 1 "world-readable env file rejected"
+expect_out "chmod 600" "permission fix suggested"
+
+write_env t1 "ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENTID=typo"
+run_wrapper t1 s1 plan
+expect_rc 1 "unknown key rejected"
+expect_out "unknown key 'ZSCALER_CLIENTID'" "unknown key named"
+
+write_env t1 "ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENT_ID=cid"
+run_wrapper t1 s1 plan
+expect_rc 1 "oneapi without secret/vanity rejected"
+expect_out "ZSCALER_VANITY_DOMAIN" "missing setting named"
+
+write_env t1 "ZSCALER_AUTH_MODE=legacy
+ZIA_USERNAME=u
+ZIA_PASSWORD=p
+ZIA_API_KEY=k
+ZIA_CLOUD=zscalerfive"
+run_wrapper t1 s1 plan
+expect_rc 1 "unknown legacy cloud rejected"
+
+write_env t1 "ZSCALER_AUTH_MODE=saml"
+run_wrapper t1 s1 plan
+expect_rc 1 "unknown auth mode rejected"
+
+# Single quotes are deliberate: the literal text must reach the env file.
+# shellcheck disable=SC2016
+write_env t1 'ZSCALER_AUTH_MODE=$(touch /tmp/pwned)'
+run_wrapper t1 s1 plan
+expect_rc 1 "env file is parsed, not executed"
+expect_out "must be 'oneapi' or 'legacy'" "command substitution treated as literal"
+
+write_env t1 "$ONEAPI_ENV"
+run_wrapper "../t1" s1 plan
+expect_rc 1 "path traversal in env name rejected"
+run_wrapper t1 "../s1" plan
+expect_rc 1 "path traversal in stack name rejected"
+run_wrapper t1 nope plan
+expect_rc 1 "unknown stack rejected"
+run_wrapper t2 s1 plan
+expect_rc 1 "missing env file rejected"
+run_wrapper t1 s1 frobnicate
+expect_rc 1 "unknown action rejected"
+
+write_env t3 "$ONEAPI_ENV"
+run_wrapper t3 s1 plan
+expect_rc 1 "missing tfvars rejected"
+expect_out "missing .*t3.tfvars" "missing tfvars named"
+expect_not_log "plan" "terraform plan never runs without tfvars"
+
+EXTRA_ENV=(STUB_TF_VERSION=1.6.0)
+run_wrapper t1 s1 plan
+expect_rc 1 "terraform < 1.7 rejected"
+EXTRA_ENV=()
+
+# 5. apply / destroy behaviour
+EXTRA_ENV=(AUTO_APPROVE=1)
+run_wrapper t1 s1 apply
+expect_rc 0 "apply succeeds"
+expect_log "ARGS: -chdir=.*stacks/s1 apply -input=false -var-file=.*-auto-approve" "AUTO_APPROVE adds -auto-approve"
+
+run_wrapper t1 zia-activate apply
+expect_rc 0 "activation stack apply succeeds without tfvars"
+expect_log "-replace=zia_activation_status.this" "activation is forced with -replace"
+
+run_wrapper t1 s1 destroy
+expect_rc 0 "destroy succeeds"
+expect_log "stacks/s1 destroy" "stack destroyed"
+expect_log "stacks/zia-activate apply .*-replace=zia_activation_status.this" "destroy of a zia stack triggers activation"
+EXTRA_ENV=()
+
+run_wrapper t1 s1 auth-check
+expect_rc 0 "auth-check succeeds"
+
+echo
+echo "passed: ${PASS}  failed: ${FAIL}"
+[ "$FAIL" -eq 0 ]

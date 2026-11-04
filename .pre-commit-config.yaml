@@ -1,0 +1,36 @@
+# pre-commit hooks: `pre-commit install` once, then they run on every commit.
+# The full suite (including terraform test and example plans) is `make qa`.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: detect-private-key
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.2
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: [-x, -P, SCRIPTDIR:.]
+
+  - repo: local
+    hooks:
+      - id: wrapper-tests
+        name: run.sh tests
+        entry: tests/scripts/test_run.sh
+        language: script
+        files: ^(scripts/|tests/scripts/)
+        pass_filenames: false

@@ -1,0 +1,8 @@
+# checkov configuration - used by scripts/qa.sh, pre-commit and CI.
+framework:
+  - terraform
+  - github_actions
+  - secrets
+skip-path:
+  - .terraform
+download-external-modules: false

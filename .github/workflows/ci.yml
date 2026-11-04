@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "1"
+  CHECKPOINT_DISABLE: "1"
+  QA_STRICT: "1"
+
+jobs:
+  terraform:
+    name: terraform ${{ matrix.terraform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported (mock providers need >= 1.7) and current.
+        terraform: ["1.7.5", "1.9.8", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+
+      - name: fmt
+        run: scripts/qa.sh fmt
+      - name: validate
+        run: scripts/qa.sh validate
+      - name: terraform test (mocked providers)
+        run: scripts/qa.sh test
+      - name: example tfvars plan (real provider schemas, no credentials)
+        run: scripts/qa.sh examples
+
+  lint:
+    name: tflint + shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.53.0
+
+      - name: tflint
+        run: scripts/qa.sh tflint
+        env:
+          # tflint downloads the AWS ruleset from GitHub releases.
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: shellcheck
+        run: scripts/qa.sh shell
+
+      - name: wrapper tests
+        run: scripts/qa.sh wrapper
+
+  security:
+    name: checkov
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install checkov
+        run: pip install --disable-pip-version-check "checkov==3.4.3"
+
+      - name: checkov
+        run: scripts/qa.sh checkov
