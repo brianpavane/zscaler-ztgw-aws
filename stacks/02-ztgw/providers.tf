@@ -3,6 +3,6 @@
 #   OneAPI : ZSCALER_CLIENT_ID, ZSCALER_CLIENT_SECRET, ZSCALER_VANITY_DOMAIN,
 #            [ZSCALER_CLOUD]
 #   Legacy : ZSCALER_USE_LEGACY_CLIENT=true, ZTC_USERNAME, ZTC_PASSWORD,
-#            ZTC_API_KEY, ZTC_CLOUD (e.g. zscalertwo, zscalerthree)
+#            ZTC_API_KEY, ZTC_CLOUD (a production cloud, e.g. zscalertwo)
 # scripts/ztgw/ztgw.py reads the same variables.
 provider "ztc" {}

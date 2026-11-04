@@ -3,5 +3,5 @@
 #   OneAPI : ZSCALER_CLIENT_ID, ZSCALER_CLIENT_SECRET | ZSCALER_PRIVATE_KEY,
 #            ZSCALER_VANITY_DOMAIN, [ZSCALER_CLOUD]
 #   Legacy : ZSCALER_USE_LEGACY_CLIENT=true, ZIA_USERNAME, ZIA_PASSWORD,
-#            ZIA_API_KEY, ZIA_CLOUD (e.g. zscalertwo, zscalerthree)
+#            ZIA_API_KEY, ZIA_CLOUD (a production cloud, e.g. zscalertwo)
 provider "zia" {}

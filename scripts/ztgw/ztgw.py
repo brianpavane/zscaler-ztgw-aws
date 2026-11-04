@@ -38,7 +38,7 @@ Authentication (read from the environment that scripts/run.sh prepares):
       ZSCALER_CLIENT_ID, ZSCALER_CLIENT_SECRET, ZSCALER_VANITY_DOMAIN,
       [ZSCALER_CLOUD]   (empty for production)
   ZSCALER_USE_LEGACY_CLIENT=true (Legacy):
-      ZTC_USERNAME, ZTC_PASSWORD, ZTC_API_KEY, ZTC_CLOUD (e.g. zscalertwo)
+      ZTC_USERNAME, ZTC_PASSWORD, ZTC_API_KEY, ZTC_CLOUD (production cloud name, e.g. zscalertwo)
 
 Credentials are never accepted as arguments and never printed. TLS
 certificates are always verified. Standard library only; run with

@@ -2,7 +2,7 @@
 
 There are two tiers: an **offline suite** that needs no tenant or credentials
 (runs locally and in CI on every change), and a **live integration runbook**
-run against a ZS2/ZS3 test tenant before a release.
+run against a test tenant on a Zscaler production cloud before a release.
 
 ## Offline suite: `make qa` / `scripts/qa.sh [step...]`
 
@@ -49,7 +49,8 @@ blocks themselves are covered by the Phase 3 runbook (step B2).
 
 ## Live integration runbook (Phase 1)
 
-Run once per framework (OneAPI and Legacy) and per cloud (ZS2, ZS3) in a
+Run once per framework (OneAPI and Legacy) and per production cloud in use
+(at minimum the clouds of your target tenants) in a
 **test tenant**. Record results in the release PR.
 
 | # | Step | Expected |

@@ -258,7 +258,25 @@ expect_log "PYTHON: -I .*scripts/ztgw/ztgw.py activate" "ztc destroy runs client
 expect_not_log "zia-activate" "ztc-only stack does not run ZIA activation"
 EXTRA_ENV=()
 
-# 8. Brownfield destroy restores routes, releases them, then destroys
+# 8. Every Zscaler production cloud is accepted in Legacy mode
+for cloud in zscaler zscalerone zscalertwo zscalerthree zscloud; do
+    write_env t1 "ZSCALER_AUTH_MODE=legacy
+ZTC_USERNAME=u
+ZTC_PASSWORD=p
+ZTC_API_KEY=k
+ZTC_CLOUD=${cloud}"
+    run_wrapper t1 gw plan
+    expect_rc 0 "legacy ZTC_CLOUD=${cloud} accepted"
+    write_env t1 "ZSCALER_AUTH_MODE=legacy
+ZIA_USERNAME=u
+ZIA_PASSWORD=p
+ZIA_API_KEY=k
+ZIA_CLOUD=${cloud}"
+    run_wrapper t1 s1 plan
+    expect_rc 0 "legacy ZIA_CLOUD=${cloud} accepted"
+done
+
+# 9. Brownfield destroy restores routes, releases them, then destroys
 write_env t1 "$ONEAPI_ENV"
 EXTRA_ENV=(AUTO_APPROVE=1 PYTHON_BIN="$WORK/bin/python-stub" 'STUB_STATE_LIST=aws_route.default["usw2-az1"]')
 run_wrapper t1 bf destroy

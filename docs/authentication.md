@@ -15,7 +15,7 @@ For tenants migrated to ZIdentity.
 | `ZSCALER_CLIENT_ID` | ZIdentity API client ID |
 | `ZSCALER_CLIENT_SECRET` | Client secret, **or** use `ZSCALER_PRIVATE_KEY` |
 | `ZSCALER_VANITY_DOMAIN` | e.g. `acme` for `acme.zslogin.net` |
-| `ZSCALER_CLOUD` | Leave **empty** for production (ZS2/ZS3). Only `beta`, `gov`, `govus` use it. |
+| `ZSCALER_CLOUD` | Leave **empty** for every production cloud. Only non-production environments (`beta`, `gov`, `govus`) use it. |
 
 Create the API client in ZIdentity (Integration → API Clients) and give it
 API roles for:
@@ -39,10 +39,12 @@ For tenants not yet on ZIdentity.
 |---|---|
 | `ZIA_USERNAME`, `ZIA_PASSWORD` | ZIA API admin |
 | `ZIA_API_KEY` | ZIA Administration → API Key Management |
-| `ZIA_CLOUD` | `zscalertwo` (ZS2) or `zscalerthree` (ZS3) |
+| `ZIA_CLOUD` | Production cloud name: `zscaler`, `zscalerone`, `zscalertwo`, `zscalerthree` or `zscloud` |
 | `ZTC_USERNAME`, `ZTC_PASSWORD`, `ZTC_API_KEY`, `ZTC_CLOUD` | Cloud & Branch Connector admin + key (Phase 2+) |
 
 `run.sh` sets `ZSCALER_USE_LEGACY_CLIENT=true` and checks the cloud names.
+It also accepts `zscalerbeta`, `zscalergov` and `zscalerten`, but this
+repository is built and tested for the production clouds only.
 It requires only the credentials of the products a stack uses: `ZIA_*` for
 stacks that use the `zia` provider, and `ZTC_*` for stacks that use `ztc`
 (Phase 2 needs only `ZTC_*`).

@@ -110,7 +110,7 @@ and that egress needs no NAT/IGW in the customer VPC.
 
 ## State and environments
 
-- One Terraform workspace per tenant/env (`zs2`, `zs3`), selected by
+- One Terraform workspace per tenant/env (e.g. `zs2`, `zs3`, `prod`), selected by
   `scripts/run.sh`. Local state in v1 (`terraform.tfstate.d/<env>/`),
   git-ignored. S3 backend with locking in v2.
 - Stacks pass values to each other through `tfvars` (for example, the Phase 2

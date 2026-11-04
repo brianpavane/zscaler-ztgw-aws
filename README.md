@@ -16,8 +16,19 @@ API for them, run by Terraform.
 
 Both Zscaler API frameworks are supported for every phase: **OneAPI**
 (ZIdentity OAuth2) and the **Legacy API** (username / password / API key),
-selected per tenant with one setting. Target clouds: production **ZS2**
-(`zscalertwo`) and **ZS3** (`zscalerthree`).
+selected per tenant with one setting. Supported clouds: every **Zscaler
+production cloud**. All of them offer the Zero Trust Gateway:
+
+| Cloud | Legacy cloud name (`ZIA_CLOUD` / `ZTC_CLOUD`) |
+|---|---|
+| zscaler.net | `zscaler` |
+| zscalerone.net (ZS1) | `zscalerone` |
+| zscalertwo.net (ZS2) | `zscalertwo` |
+| zscalerthree.net (ZS3) | `zscalerthree` |
+| zscloud.net | `zscloud` |
+
+With OneAPI no cloud setting is needed for production tenants: the vanity
+domain identifies the tenant. With the Legacy API, set the cloud name above.
 
 ## Phases
 
@@ -104,7 +115,8 @@ scripts/run.sh <env> <stack> <action> [extra terraform args]
   as the environment variables the providers read. Secrets never appear on a
   command line, in `.tfvars`, or in Terraform state.
 - Uses Terraform workspace `<env>` and `stacks/<stack>/env/<env>.tfvars`, so
-  ZS2 and ZS3 keep separate local state in the same checkout.
+  tenants on different clouds (e.g. env names `zs2` and `zs3`) keep separate
+  local state in the same checkout.
 - In Legacy mode, only the credentials for the products the stack uses
   (`zia`, `ztc`) are required.
 - `destroy` of `03-account-brownfield` first restores the original default

@@ -193,6 +193,21 @@ def make_client(env, api):
         return ztgw.Client(transport=api, sleep=clock.sleep, clock=clock.time)
 
 
+PRODUCTION_CLOUDS = ("zscaler", "zscalerone", "zscalertwo", "zscalerthree", "zscloud")
+
+
+class ProductionCloudTest(unittest.TestCase):
+    def test_legacy_base_url_for_every_production_cloud(self):
+        for cloud in PRODUCTION_CLOUDS:
+            with self.subTest(cloud=cloud):
+                c = make_client({**LEGACY_ENV, "ZTC_CLOUD": cloud}, FakeApi())
+                self.assertEqual(c.base_url, f"https://connector.{cloud}.net/api/v1")
+
+    def test_oneapi_production_needs_no_cloud(self):
+        c = make_client({**ONEAPI_ENV, "ZSCALER_CLOUD": ""}, FakeApi())
+        self.assertEqual(c.base_url, "https://api.zsapi.net/ztw/api/v1")
+
+
 class ObfuscationTest(unittest.TestCase):
     def test_known_vector(self):
         # high=123456 -> seed[1..6]="bcdefg"; low=61728 -> "061728" -> seed[i+2]="cidjek"

@@ -36,6 +36,9 @@ All notable changes to this project are documented here. The format follows
   product-aware wrapper tests.
 
 ### Changed
+- Documentation: supported clouds are all Zscaler production clouds
+  (`zscaler`, `zscalerone`, `zscalertwo`, `zscalerthree`, `zscloud`), not
+  only ZS2/ZS3. The code already accepted them; tests now cover each one.
 - Phase 2: the account group's membership is only seeded by
   `account_group_member_ids` at creation. Afterwards the Phase 3 stacks
   manage it, so re-applying Phase 2 never removes their accounts.
