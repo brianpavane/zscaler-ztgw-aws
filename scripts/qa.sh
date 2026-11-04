@@ -12,8 +12,11 @@
 #   validate   terraform init -backend=false && validate, every module + stack
 #   tflint     tflint on every module + stack (.tflint.hcl)
 #   test       terraform test (mocked providers) in every dir with tests/
-#   examples   real-provider `terraform plan` of every stacks/*/env/example.tfvars
-#              with credential validation skipped (no tenant needed)
+#   examples   validate every stacks/*/env/example.tfvars:
+#              - stacks with tests/example/: terraform test -var-file (mocked)
+#              - zia-only stacks: real-provider `terraform plan` with credential
+#                validation skipped (no tenant needed)
+#   python     unit tests for scripts/ztgw/ztgw.py (python3 -I, stdlib only)
 #   shell      shellcheck on every shell script
 #   wrapper    tests/scripts/test_run.sh (run.sh behaviour, stub terraform)
 #   checkov    checkov static security scan (.checkov.yaml)
@@ -107,12 +110,12 @@ step_test() {
     if [ "$rc" -eq 0 ]; then record test PASS; else record test FAIL; fi
 }
 
-# Plan each stack's example.tfvars with the real providers but no credentials.
-# Catches tfvars/variable mismatches, type errors and validation failures
-# against the real provider schemas. Only zia supports skipping credential
-# validation; stacks whose plan needs live API reads are listed in
-# EXAMPLES_SKIP with a reason.
-EXAMPLES_SKIP=""
+# Validate each stack's env/example.tfvars without a tenant:
+#  - stacks with tests/example/ run that test directory with the example
+#    var-file against mocked providers (needed for ztc/aws stacks, whose
+#    providers cannot configure without credentials);
+#  - zia-only stacks are planned with the real provider and credential
+#    validation skipped, which also checks values against real schemas.
 step_examples() {
     say "example tfvars plan"
     local d name tmp rc=0 ran=0
@@ -122,8 +125,21 @@ step_examples() {
     for d in stacks/*/; do
         d="${d%/}"; name="${d#stacks/}"
         [ -f "$d/env/example.tfvars" ] || continue
-        case " $EXAMPLES_SKIP " in *" $name "*) echo "-- $name: skipped (EXAMPLES_SKIP)"; continue ;; esac
         echo "-- $name"
+        if [ -d "$d/tests/example" ]; then
+            ran=1
+            "$TF" -chdir="$d" init -backend=false -input=false >/dev/null || { rc=1; continue; }
+            if "$TF" -chdir="$d" test -no-color -test-directory=tests/example \
+                    -var-file=env/example.tfvars >"$tmp/$name.test.txt" 2>&1; then
+                echo "   mocked apply OK"
+            else
+                cat "$tmp/$name.test.txt"; rc=1
+            fi
+            continue
+        fi
+        if grep -Eqs '^[[:space:]]*provider[[:space:]]+"(ztc|aws)"' "$d"/*.tf; then
+            echo "   no tests/example/ and providers cannot plan without credentials"; rc=1; continue
+        fi
         mkdir -p "$tmp/stacks/$name"
         cp "$d"/*.tf "$tmp/stacks/$name/"
         cp "$d/env/example.tfvars" "$tmp/stacks/$name/example.tfvars"
@@ -152,6 +168,17 @@ step_examples() {
     else record examples FAIL; fi
 }
 
+step_python() {
+    say "python"
+    have python3 || { missing_tool python python3; return; }
+    if python3 -I -m py_compile scripts/ztgw/ztgw.py \
+        && python3 -I -m unittest discover -s tests/python; then
+        record python PASS
+    else
+        record python FAIL
+    fi
+}
+
 step_shell() {
     say "shellcheck"
     have shellcheck || { missing_tool shell shellcheck; return; }
@@ -177,7 +204,7 @@ step_checkov() {
     fi
 }
 
-ALL="fmt validate tflint test examples shell wrapper checkov"
+ALL="fmt validate tflint test examples python shell wrapper checkov"
 STEPS="${*:-$ALL}"
 
 for s in $STEPS; do

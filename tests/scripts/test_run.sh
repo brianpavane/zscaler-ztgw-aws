@@ -21,13 +21,24 @@ PASS=0
 FAIL=0
 
 # --- sandbox: a copy of the repo's scripts + a minimal stack layout ---------
-mkdir -p "$WORK/repo/scripts/lib" "$WORK/repo/config" \
-         "$WORK/repo/stacks/s1/env" "$WORK/repo/stacks/zia-activate" "$WORK/bin"
+mkdir -p "$WORK/repo/scripts/lib" "$WORK/repo/scripts/ztgw" "$WORK/repo/config" \
+         "$WORK/repo/stacks/s1/env" "$WORK/repo/stacks/gw/env" \
+         "$WORK/repo/stacks/zia-activate" "$WORK/bin"
 cp "$REPO_ROOT/scripts/run.sh" "$WORK/repo/scripts/run.sh"
 cp "$REPO_ROOT/scripts/lib/common.sh" "$WORK/repo/scripts/lib/common.sh"
 printf 'provider "zia" {}\n' > "$WORK/repo/stacks/s1/providers.tf"
 printf 'provider "zia" {}\n' > "$WORK/repo/stacks/zia-activate/providers.tf"
 printf 'name_prefix = "t"\n' > "$WORK/repo/stacks/s1/env/t1.tfvars"
+printf 'provider "ztc" {}\n' > "$WORK/repo/stacks/gw/providers.tf"
+printf 'region = "us-west-2"\n' > "$WORK/repo/stacks/gw/env/t1.tfvars"
+: > "$WORK/repo/scripts/ztgw/ztgw.py"
+
+# Stub python: records the client invocation instead of calling the API.
+cat > "$WORK/bin/python-stub" <<'PYSTUB'
+#!/usr/bin/env bash
+printf 'PYTHON: %s\n' "$*" >> "$STUB_LOG"
+PYSTUB
+chmod +x "$WORK/bin/python-stub"
 
 LOG="$WORK/tf.log"
 cat > "$WORK/bin/terraform" <<'STUB'
@@ -192,6 +203,54 @@ EXTRA_ENV=()
 
 run_wrapper t1 s1 auth-check
 expect_rc 0 "auth-check succeeds"
+
+run_wrapper --help
+expect_rc 0 "--help succeeds"
+expect_out "PYTHON_BIN" "help shows the whole header"
+
+# 6. Product-aware credentials (zia vs ztc stacks)
+write_env t1 "$LEGACY_ENV"
+run_wrapper t1 gw plan
+expect_rc 1 "legacy ztc stack without ZTC credentials rejected"
+expect_out "ZTC_USERNAME" "missing ZTC setting named"
+
+write_env t1 "ZSCALER_AUTH_MODE=legacy
+ZTC_USERNAME=u
+ZTC_PASSWORD=p
+ZTC_API_KEY=k
+ZTC_CLOUD=zscalertwo"
+run_wrapper t1 gw plan
+expect_rc 0 "legacy ztc stack needs only ZTC credentials"
+expect_out "products=ztc" "products detected from stack"
+run_wrapper t1 s1 plan
+expect_rc 1 "legacy zia stack still needs ZIA credentials"
+
+write_env t1 "ZSCALER_AUTH_MODE=legacy
+ZTC_USERNAME=u
+ZTC_PASSWORD=p
+ZTC_API_KEY=k
+ZTC_CLOUD=zscalerfive"
+run_wrapper t1 gw plan
+expect_rc 1 "unknown ZTC cloud rejected"
+
+write_env t1 "ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENT_ID=cid
+ZSCALER_PRIVATE_KEY=pk
+ZSCALER_VANITY_DOMAIN=acme"
+run_wrapper t1 gw plan
+expect_rc 1 "oneapi private-key only rejected for ztc stack"
+expect_out "needs ZSCALER_CLIENT_SECRET" "reason explained"
+run_wrapper t1 s1 plan
+expect_rc 0 "oneapi private-key accepted for zia stack"
+
+# 7. Destroy of a ztc stack activates Cloud & Branch Connector changes
+write_env t1 "$ONEAPI_ENV"
+EXTRA_ENV=(AUTO_APPROVE=1 PYTHON_BIN="$WORK/bin/python-stub")
+run_wrapper t1 gw destroy
+expect_rc 0 "ztc stack destroy succeeds"
+expect_log "PYTHON: -I .*scripts/ztgw/ztgw.py activate" "ztc destroy runs client activation"
+expect_not_log "zia-activate" "ztc-only stack does not run ZIA activation"
+EXTRA_ENV=()
 
 echo
 echo "passed: ${PASS}  failed: ${FAIL}"

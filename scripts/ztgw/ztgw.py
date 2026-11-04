@@ -1,0 +1,586 @@
+#!/usr/bin/env python3
+"""ztgw.py - manage a Zscaler Zero Trust Gateway (ZTGW) for AWS.
+
+The official zscaler/ztc Terraform provider has no Zero Trust Gateway
+resource, so stacks/02-ztgw drives this client from Terraform:
+
+  create    create the gateway (or adopt one with the same name), wait for
+            HEALTHY, activate                     spec: ZTGW_SPEC env (JSON)
+  update    apply mutable settings (account groups, allowed accounts,
+            additional AWS accounts), activate    spec: ZTGW_SPEC env
+  delete    delete the gateway, wait until gone, optionally delete the ZTC
+            location it leaves behind, activate   spec: ZTGW_SPEC env
+  read      Terraform `external` data source: JSON query on stdin, flat
+            JSON object of strings on stdout
+  activate  activate pending Cloud & Branch Connector changes
+  regions   print the AWS regions the tenant supports for ZTGW
+
+API: Cloud & Branch Connector API, /ztGateway endpoints
+(https://automate.zscaler.com, "Zero Trust Gateway").
+
+Authentication (read from the environment that scripts/run.sh prepares):
+  ZSCALER_USE_LEGACY_CLIENT=false (OneAPI):
+      ZSCALER_CLIENT_ID, ZSCALER_CLIENT_SECRET, ZSCALER_VANITY_DOMAIN,
+      [ZSCALER_CLOUD]   (empty for production)
+  ZSCALER_USE_LEGACY_CLIENT=true (Legacy):
+      ZTC_USERNAME, ZTC_PASSWORD, ZTC_API_KEY, ZTC_CLOUD (e.g. zscalertwo)
+
+Credentials are never accepted as arguments and never printed. TLS
+certificates are always verified. Standard library only; run with
+`python3 -I`.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+USER_AGENT = "zscaler-ztgw-aws/ztgw.py"
+HTTP_TIMEOUT = 60
+MAX_RETRIES = 5
+POLL_INTERVAL = 15
+LEGACY_CLOUDS = {
+    "zscaler", "zscalerone", "zscalertwo", "zscalerthree", "zscloud",
+    "zscalerbeta", "zscalergov", "zscalerten",
+}
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,127}$")
+AZ_ID_RE = re.compile(r"^[a-z]{2,6}[0-9]-az[0-9]{1,2}$")
+REGION_RE = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-[0-9]$")
+AWS_ACCOUNT_RE = re.compile(r"^[0-9]{12}$")
+
+
+class ZtgwError(Exception):
+    """An error to report to the operator (no traceback)."""
+
+
+def log(msg: str) -> None:
+    print(f"[ztgw] {msg}", file=sys.stderr, flush=True)
+
+
+# --------------------------------------------------------------------------
+# HTTP transport (injectable for tests)
+# --------------------------------------------------------------------------
+
+Response = Tuple[int, Dict[str, str], bytes]
+Transport = Callable[[str, str, Dict[str, str], Optional[bytes]], Response]
+
+
+def urllib_transport(method: str, url: str, headers: Dict[str, str],
+                     body: Optional[bytes]) -> Response:
+    """Real transport. Uses the default SSL context: certificates verified."""
+    if not url.startswith("https://"):
+        raise ZtgwError(f"refusing non-HTTPS URL: {url}")
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return resp.status, dict(resp.headers.items()), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers.items()) if e.headers else {}, e.read() or b""
+    except urllib.error.URLError as e:
+        raise ZtgwError(f"{method} {url.split('?')[0]}: {e.reason}") from None
+
+
+# --------------------------------------------------------------------------
+# Authentication
+# --------------------------------------------------------------------------
+
+def obfuscate_api_key(api_key: str, timestamp_ms: str) -> str:
+    """Zscaler legacy API key obfuscation (same algorithm as zscaler-sdk-go)."""
+    if len(timestamp_ms) < 6 or len(api_key) < 12:
+        raise ZtgwError("ZTC_API_KEY is too short to be a valid API key")
+    high = timestamp_ms[-6:]
+    low = f"{int(high) >> 1:06d}"
+    key = "".join(api_key[int(c)] for c in high)
+    key += "".join(api_key[int(c) + 2] for c in low)
+    return key
+
+
+def _env(name: str) -> str:
+    return os.environ.get(name, "").strip()
+
+
+def _require(*names: str) -> None:
+    missing = [n for n in names if not _env(n)]
+    if missing:
+        raise ZtgwError("missing environment variable(s): " + ", ".join(missing)
+                        + " (run through scripts/run.sh)")
+
+
+class Client:
+    """Minimal Cloud & Branch Connector API client (OneAPI or Legacy)."""
+
+    def __repr__(self) -> str:  # never expose credentials or tokens
+        return f"<ztgw.Client legacy={self.legacy} base_url={self.base_url}>"
+
+    def __init__(self, transport: Transport = urllib_transport,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.time) -> None:
+        self._transport = transport
+        self._sleep = sleep
+        self._clock = clock
+        self.legacy = _env("ZSCALER_USE_LEGACY_CLIENT").lower() == "true"
+        self._token: Optional[str] = None
+        self._token_expiry = 0.0
+        self._session: Optional[str] = None
+        # Credentials are captured once, here, and kept in private attributes.
+        self._creds: Dict[str, str] = {}
+
+        if self.legacy:
+            _require("ZTC_USERNAME", "ZTC_PASSWORD", "ZTC_API_KEY", "ZTC_CLOUD")
+            cloud = _env("ZTC_CLOUD").lower()
+            if cloud not in LEGACY_CLOUDS:
+                raise ZtgwError(f"ZTC_CLOUD '{cloud}' is not a known Zscaler cloud")
+            self.base_url = f"https://connector.{cloud}.net/api/v1"
+            self._creds = {k: _env(k) for k in ("ZTC_USERNAME", "ZTC_PASSWORD", "ZTC_API_KEY")}
+        else:
+            if not _env("ZSCALER_CLIENT_SECRET") and _env("ZSCALER_PRIVATE_KEY"):
+                raise ZtgwError("ztgw.py supports OneAPI client-secret auth only; "
+                                "set ZSCALER_CLIENT_SECRET (private-key JWT is not supported)")
+            _require("ZSCALER_CLIENT_ID", "ZSCALER_CLIENT_SECRET", "ZSCALER_VANITY_DOMAIN")
+            cloud = _env("ZSCALER_CLOUD").lower()
+            if cloud in ("gov", "govus"):
+                raise ZtgwError("FedRAMP clouds are not supported by ztgw.py")
+            if not re.fullmatch(r"[a-z0-9-]*", cloud):
+                raise ZtgwError(f"invalid ZSCALER_CLOUD '{cloud}'")
+            vanity = _env("ZSCALER_VANITY_DOMAIN")
+            if not re.fullmatch(r"[A-Za-z0-9-]+", vanity):
+                raise ZtgwError("invalid ZSCALER_VANITY_DOMAIN")
+            if cloud in ("", "production"):
+                self.token_url = f"https://{vanity}.zslogin.net/oauth2/v1/token"
+                self.base_url = "https://api.zsapi.net/ztw/api/v1"
+            else:
+                self.token_url = f"https://{vanity}.zslogin{cloud}.net/oauth2/v1/token"
+                self.base_url = f"https://api.{cloud}.zsapi.net/ztw/api/v1"
+            self._creds = {k: _env(k) for k in ("ZSCALER_CLIENT_ID", "ZSCALER_CLIENT_SECRET")}
+
+    # -- auth ---------------------------------------------------------------
+
+    def _oneapi_token(self) -> str:
+        if self._token and self._clock() < self._token_expiry - 60:
+            return self._token
+        form = urllib.parse.urlencode({
+            "grant_type": "client_credentials",
+            "client_id": self._creds["ZSCALER_CLIENT_ID"],
+            "client_secret": self._creds["ZSCALER_CLIENT_SECRET"],
+            "audience": "https://api.zscaler.com",
+        }).encode()
+        status, _, body = self._transport("POST", self.token_url, {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        }, form)
+        if status != 200:
+            raise ZtgwError(f"OneAPI authentication failed (HTTP {status})")
+        try:
+            data = json.loads(body)
+            self._token = data["access_token"]
+        except (ValueError, KeyError):
+            raise ZtgwError("OneAPI authentication returned no access_token") from None
+        self._token_expiry = self._clock() + float(data.get("expires_in", 3600))
+        return self._token
+
+    def _legacy_login(self) -> str:
+        if self._session:
+            return self._session
+        ts = str(int(self._clock() * 1000))
+        payload = json.dumps({
+            "username": self._creds["ZTC_USERNAME"],
+            "password": self._creds["ZTC_PASSWORD"],
+            "apiKey": obfuscate_api_key(self._creds["ZTC_API_KEY"], ts),
+            "timestamp": ts,
+        }).encode()
+        status, headers, _ = self._transport("POST", self.base_url + "/auth", {
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        }, payload)
+        if status != 200:
+            raise ZtgwError(f"Legacy authentication failed (HTTP {status})")
+        cookie = next((v for k, v in headers.items() if k.lower() == "set-cookie"), "")
+        m = re.search(r"JSESSIONID=([^;]+)", cookie)
+        if not m:
+            raise ZtgwError("Legacy authentication returned no JSESSIONID")
+        self._session = m.group(1)
+        return self._session
+
+    def close(self) -> None:
+        """End the legacy session (OneAPI tokens simply expire)."""
+        if self.legacy and self._session:
+            try:
+                self._transport("DELETE", self.base_url + "/auth", {
+                    "Cookie": f"JSESSIONID={self._session}", "User-Agent": USER_AGENT,
+                }, None)
+            except ZtgwError:
+                pass
+            self._session = None
+
+    def _auth_headers(self) -> Dict[str, str]:
+        if self.legacy:
+            return {"Cookie": f"JSESSIONID={self._legacy_login()}"}
+        return {"Authorization": f"Bearer {self._oneapi_token()}"}
+
+    # -- requests -----------------------------------------------------------
+
+    def request(self, method: str, path: str, body: Any = None,
+                query: Optional[Dict[str, Any]] = None,
+                ok_statuses: Tuple[int, ...] = (200, 201, 204)) -> Tuple[int, Any]:
+        url = self.base_url + path
+        if query:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+        data = json.dumps(body).encode() if body is not None else None
+        reauthed = False
+        for attempt in range(1, MAX_RETRIES + 1):
+            headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+            headers.update(self._auth_headers())
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            status, resp_headers, raw = self._transport(method, url, headers, data)
+            if status == 401 and not reauthed:
+                reauthed = True
+                self._token, self._session = None, None
+                continue
+            if status == 429 or status >= 500:
+                retry_after = next((v for k, v in resp_headers.items()
+                                    if k.lower() == "retry-after"), "")
+                delay = float(retry_after) if retry_after.isdigit() else min(2 ** attempt, 30)
+                log(f"{method} {path}: HTTP {status}, retry {attempt}/{MAX_RETRIES} in {delay:.0f}s")
+                self._sleep(delay)
+                continue
+            parsed = _parse_json(raw)
+            if status in ok_statuses:
+                return status, parsed
+            raise ZtgwError(f"{method} {path}: HTTP {status}: {_error_text(parsed, raw)}")
+        raise ZtgwError(f"{method} {path}: giving up after {MAX_RETRIES} attempts")
+
+    def get(self, path: str, **query: Any) -> Any:
+        return self.request("GET", path, query=query or None)[1]
+
+
+def _parse_json(raw: bytes) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
+def _error_text(parsed: Any, raw: bytes) -> str:
+    if isinstance(parsed, dict):
+        code = parsed.get("code", "")
+        msg = parsed.get("message", "")
+        if code or msg:
+            return f"{code} {msg}".strip()
+    return raw[:300].decode("utf-8", "replace")
+
+
+def _as_list(data: Any) -> List[Dict[str, Any]]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("list", "gateways", "items", "data"):
+            if isinstance(data.get(key), list):
+                return data[key]
+    return []
+
+
+# --------------------------------------------------------------------------
+# Spec
+# --------------------------------------------------------------------------
+
+def load_spec() -> Dict[str, Any]:
+    raw = os.environ.get("ZTGW_SPEC", "")
+    if not raw:
+        raise ZtgwError("ZTGW_SPEC is not set")
+    try:
+        spec = json.loads(raw)
+    except ValueError:
+        raise ZtgwError("ZTGW_SPEC is not valid JSON") from None
+    return validate_spec(spec)
+
+
+def validate_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ZtgwError("ZTGW_SPEC must be a JSON object")
+    name = spec.get("name", "")
+    if not isinstance(name, str) or not NAME_RE.match(name):
+        raise ZtgwError(f"invalid gateway name {name!r}")
+    region = spec.get("region", "")
+    if region and not REGION_RE.match(region):
+        raise ZtgwError(f"invalid AWS region {region!r}")
+    for az in spec.get("availability_zone_ids", []) or []:
+        if not AZ_ID_RE.match(str(az)):
+            raise ZtgwError(f"invalid AZ ID {az!r} (expected e.g. usw2-az1)")
+    for acct in spec.get("additional_aws_accounts", []) or []:
+        if not AWS_ACCOUNT_RE.match(str(acct)):
+            raise ZtgwError(f"invalid AWS account ID {acct!r}")
+    for key in ("account_group_ids", "allowed_account_ids"):
+        for v in spec.get(key, []) or []:
+            if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
+                raise ZtgwError(f"{key} must contain positive integers")
+    loc = spec.get("location_name", "")
+    if loc and not NAME_RE.match(loc):
+        raise ZtgwError(f"invalid location name {loc!r}")
+    return spec
+
+
+def _region_code(region: str) -> str:
+    return region.upper().replace("-", "_")
+
+
+def _norm_region(value: Any) -> str:
+    return str(value or "").lower().replace("_", "-")
+
+
+def mutable_prov_data(spec: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "accountGroups": [{"id": i} for i in sorted(spec.get("account_group_ids") or [])],
+        "allowedAccounts": [{"id": i} for i in sorted(spec.get("allowed_account_ids") or [])],
+        "additionalAwsAccounts": sorted(spec.get("additional_aws_accounts") or []),
+    }
+
+
+def build_create_payload(spec: Dict[str, Any]) -> Dict[str, Any]:
+    for key in ("region", "availability_zone_ids", "location_name", "location_template_id"):
+        if not spec.get(key):
+            raise ZtgwError(f"spec field '{key}' is required to create a gateway")
+    prov = {
+        "locationName": spec["location_name"],
+        "locationTemplate": {"id": int(spec["location_template_id"])},
+    }
+    prov.update({k: v for k, v in mutable_prov_data(spec).items() if v})
+    return {
+        "name": spec["name"],
+        "platform": "AWS",
+        "region": spec["region"],
+        "awsRegion": _region_code(spec["region"]),
+        "availabilityZoneIds": list(spec["availability_zone_ids"]),
+        "provData": prov,
+    }
+
+
+# --------------------------------------------------------------------------
+# Operations
+# --------------------------------------------------------------------------
+
+def find_gateway(c: Client, name: str) -> Optional[Dict[str, Any]]:
+    data = c.get("/ztGateway", platform="AWS", search=name, pageSize=1000)
+    matches = [g for g in _as_list(data) if g.get("name") == name]
+    if len(matches) > 1:
+        raise ZtgwError(f"{len(matches)} gateways are named '{name}'; resolve manually")
+    if not matches:
+        return None
+    return c.get(f"/ztGateway/{int(matches[0]['id'])}")
+
+
+def find_location(c: Client, name: str) -> Optional[Dict[str, Any]]:
+    data = c.get("/location", search=name, pageSize=1000)
+    matches = [loc for loc in _as_list(data) if loc.get("name") == name]
+    return matches[0] if matches else None
+
+
+def health(gw: Dict[str, Any]) -> str:
+    return str(gw.get("healthStatus") or "UNKNOWN").upper()
+
+
+def activate(c: Client) -> None:
+    status, body = c.request("PUT", "/ecAdminActivateStatus/activate", body={})
+    state = body.get("orgEditStatus", "") if isinstance(body, dict) else ""
+    log(f"activation requested (HTTP {status}{', ' + state if state else ''})")
+
+
+def check_region_supported(c: Client, region: str) -> None:
+    try:
+        regions = _as_list(c.get("/ztGateway/supportedRegions", platform="AWS"))
+    except ZtgwError as e:
+        log(f"WARNING: could not list supported regions ({e}); continuing")
+        return
+    names = {_norm_region(r.get(k)) for r in regions for k in ("name", "regionName")}
+    names.discard("")
+    if names and _norm_region(region) not in names:
+        raise ZtgwError(f"region {region} is not supported for ZTGW in this tenant "
+                        f"(supported: {', '.join(sorted(names))})")
+
+
+def wait_healthy(c: Client, gw_id: int, timeout: int) -> Dict[str, Any]:
+    deadline = c._clock() + timeout
+    while True:
+        gw = c.get(f"/ztGateway/{gw_id}")
+        state = health(gw)
+        log(f"gateway {gw_id} health={state}")
+        if state == "HEALTHY":
+            return gw
+        if c._clock() >= deadline:
+            raise ZtgwError(f"gateway {gw_id} not HEALTHY after {timeout}s (last: {state}); "
+                            "re-run apply once it is healthy - creation is idempotent")
+        c._sleep(POLL_INTERVAL)
+
+
+def cmd_create(c: Client, spec: Dict[str, Any]) -> Dict[str, Any]:
+    name = spec["name"]
+    timeout = int(spec.get("health_timeout_seconds", 1800))
+    gw = find_gateway(c, name)
+    if gw:
+        if _norm_region(gw.get("region")) != _norm_region(spec.get("region")):
+            raise ZtgwError(f"a gateway named '{name}' already exists in region "
+                            f"{gw.get('region')}; refusing to adopt it for {spec.get('region')}")
+        log(f"adopting existing gateway '{name}' (id {gw['id']})")
+        gw_id = int(gw["id"])
+    else:
+        check_region_supported(c, spec["region"])
+        payload = build_create_payload(spec)
+        log(f"creating gateway '{name}' in {spec['region']} "
+            f"({', '.join(spec['availability_zone_ids'])})")
+        try:
+            _, created = c.request("POST", "/ztGateway", body=payload)
+        except ZtgwError as e:
+            if "pending activation" in str(e).lower():
+                raise ZtgwError(f"{e}. Another change in the tenant is waiting for "
+                                "activation; review it, then run: ztgw.py activate") from None
+            raise
+        if not isinstance(created, dict) or "id" not in created:
+            raise ZtgwError("create returned no gateway id")
+        gw_id = int(created["id"])
+        log(f"created gateway id {gw_id}")
+    gw = wait_healthy(c, gw_id, timeout)
+    activate(c)
+    return gw
+
+
+def cmd_update(c: Client, spec: Dict[str, Any]) -> Dict[str, Any]:
+    gw = find_gateway(c, spec["name"])
+    if not gw:
+        raise ZtgwError(f"gateway '{spec['name']}' not found; create it first")
+    prov = dict(gw.get("provData") or {})
+    current = {
+        "accountGroups": sorted(int(x["id"]) for x in prov.get("accountGroups") or []),
+        "allowedAccounts": sorted(int(x["id"]) for x in prov.get("allowedAccounts") or []),
+        "additionalAwsAccounts": sorted(prov.get("additionalAwsAccounts") or []),
+    }
+    wanted = mutable_prov_data(spec)
+    desired = {
+        "accountGroups": [x["id"] for x in wanted["accountGroups"]],
+        "allowedAccounts": [x["id"] for x in wanted["allowedAccounts"]],
+        "additionalAwsAccounts": wanted["additionalAwsAccounts"],
+    }
+    if current == desired:
+        log("gateway settings already up to date")
+        return gw
+    prov.update(wanted)
+    body = {k: gw[k] for k in ("id", "name", "platform", "region", "availabilityZoneIds") if k in gw}
+    body["provData"] = prov
+    log(f"updating gateway '{spec['name']}' (id {gw['id']})")
+    c.request("PUT", f"/ztGateway/{int(gw['id'])}", body=body)
+    activate(c)
+    return c.get(f"/ztGateway/{int(gw['id'])}")
+
+
+def cmd_delete(c: Client, spec: Dict[str, Any]) -> None:
+    name = spec["name"]
+    timeout = int(spec.get("delete_timeout_seconds", 900))
+    gw = find_gateway(c, name)
+    if not gw:
+        log(f"gateway '{name}' not found (already deleted)")
+    else:
+        gw_id = int(gw["id"])
+        log(f"deleting gateway '{name}' (id {gw_id})")
+        c.request("DELETE", f"/ztGateway/{gw_id}", ok_statuses=(200, 202, 204, 404))
+        deadline = c._clock() + timeout
+        while find_gateway(c, name):
+            if c._clock() >= deadline:
+                raise ZtgwError(f"gateway {gw_id} still present after {timeout}s")
+            c._sleep(POLL_INTERVAL)
+        log("gateway deleted")
+        activate(c)
+
+    loc_name = spec.get("location_name")
+    if spec.get("cleanup_location") and loc_name:
+        loc = find_location(c, loc_name)
+        if loc:
+            log(f"deleting leftover location '{loc_name}' (id {loc['id']})")
+            c.request("DELETE", f"/location/{int(loc['id'])}", ok_statuses=(200, 204, 404))
+            activate(c)
+        else:
+            log(f"no leftover location '{loc_name}'")
+
+
+def summarize(gw: Optional[Dict[str, Any]], loc: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Flat map of strings, as required by Terraform's external data source."""
+    gw = gw or {}
+    prov = gw.get("provData") or {}
+    return {
+        "exists": "true" if gw else "false",
+        "id": str(gw.get("id", "")),
+        "name": str(gw.get("name", "")),
+        "region": str(gw.get("region", "")),
+        "health_status": str(gw.get("healthStatus", "")),
+        "endpoint_service_name": str(gw.get("endpointServiceName", "")),
+        "endpoints_count": str(gw.get("endpointsCount", "")),
+        "availability_zone_ids": ",".join(gw.get("availabilityZoneIds") or []),
+        "location_name": str(prov.get("locationName") or (loc or {}).get("name", "")),
+        "location_id": str((loc or {}).get("id", "")),
+    }
+
+
+def cmd_read(c: Client, query: Dict[str, Any]) -> Dict[str, str]:
+    spec = validate_spec({"name": query.get("name", ""),
+                          "location_name": query.get("location_name", "")})
+    gw = find_gateway(c, spec["name"])
+    loc_name = ((gw or {}).get("provData") or {}).get("locationName") or spec.get("location_name")
+    loc = find_location(c, loc_name) if gw and loc_name else None
+    return summarize(gw, loc)
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+USAGE = "usage: ztgw.py {create|update|delete|read|activate|regions}"
+
+
+def main(argv: List[str], client_factory: Callable[[], Client] = Client) -> int:
+    if len(argv) != 2 or argv[1] not in ("create", "update", "delete", "read",
+                                         "activate", "regions"):
+        print(USAGE, file=sys.stderr)
+        return 2
+    cmd = argv[1]
+    try:
+        if cmd == "read":
+            try:
+                query = json.loads(sys.stdin.read() or "{}")
+            except ValueError:
+                raise ZtgwError("read: stdin is not valid JSON") from None
+        else:
+            spec = load_spec() if cmd in ("create", "update", "delete") else {}
+        c = client_factory()
+        try:
+            if cmd == "read":
+                print(json.dumps(cmd_read(c, query)))
+            elif cmd == "create":
+                gw = cmd_create(c, spec)
+                log(f"gateway ready: endpoint service {gw.get('endpointServiceName', '?')}")
+            elif cmd == "update":
+                cmd_update(c, spec)
+            elif cmd == "delete":
+                cmd_delete(c, spec)
+            elif cmd == "activate":
+                activate(c)
+            elif cmd == "regions":
+                for r in _as_list(c.get("/ztGateway/supportedRegions", platform="AWS")):
+                    print(r.get("regionName") or r.get("name"))
+        finally:
+            c.close()
+    except ZtgwError as e:
+        print(f"[ztgw] ERROR: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

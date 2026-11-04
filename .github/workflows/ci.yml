@@ -75,6 +75,9 @@ jobs:
       - name: wrapper tests
         run: scripts/qa.sh wrapper
 
+      - name: python client tests
+        run: scripts/qa.sh python
+
   security:
     name: checkov
     runs-on: ubuntu-latest

@@ -87,17 +87,23 @@ require_vars() {
     [ -z "$missing" ] || die "missing required setting(s) for auth mode '${ZSCALER_AUTH_MODE}':${missing}"
 }
 
-# configure_zscaler_auth
+# configure_zscaler_auth "PRODUCTS"
+#   PRODUCTS: space-separated Zscaler providers the stack uses (zia, ztc).
 #   Validates the credentials for ZSCALER_AUTH_MODE and leaves exactly one
 #   framework's variables in the environment, so the providers cannot pick up
-#   a stale credential from the other one.
+#   a stale credential from the other one. In legacy mode only the products
+#   the stack uses need credentials.
 configure_zscaler_auth() {
+    local products="${1:-zia}"
     : "${ZSCALER_AUTH_MODE:=oneapi}"
     case "$ZSCALER_AUTH_MODE" in
         oneapi)
             require_vars ZSCALER_CLIENT_ID ZSCALER_VANITY_DOMAIN
             if [ -z "${ZSCALER_CLIENT_SECRET:-}" ] && [ -z "${ZSCALER_PRIVATE_KEY:-}" ]; then
                 die "OneAPI needs ZSCALER_CLIENT_SECRET or ZSCALER_PRIVATE_KEY"
+            fi
+            if in_list ztc "$products" && [ -z "${ZSCALER_CLIENT_SECRET:-}" ]; then
+                die "the ZT Gateway client (scripts/ztgw/ztgw.py) needs ZSCALER_CLIENT_SECRET (private-key auth is not supported there)"
             fi
             [ -z "${ZSCALER_CLOUD:-}" ] && unset ZSCALER_CLOUD
             [ -z "${ZSCALER_CLIENT_SECRET:-}" ] && unset ZSCALER_CLIENT_SECRET
@@ -107,10 +113,13 @@ configure_zscaler_auth() {
             export ZSCALER_USE_LEGACY_CLIENT=false
             ;;
         legacy)
-            require_vars ZIA_USERNAME ZIA_PASSWORD ZIA_API_KEY ZIA_CLOUD
-            in_list "${ZIA_CLOUD:-}" "$LEGACY_CLOUDS" || die "ZIA_CLOUD '${ZIA_CLOUD:-}' is not one of: ${LEGACY_CLOUDS}"
-            if [ -n "${ZTC_CLOUD:-}" ] && ! in_list "$ZTC_CLOUD" "$LEGACY_CLOUDS"; then
-                die "ZTC_CLOUD '${ZTC_CLOUD}' is not one of: ${LEGACY_CLOUDS}"
+            if in_list zia "$products"; then
+                require_vars ZIA_USERNAME ZIA_PASSWORD ZIA_API_KEY ZIA_CLOUD
+                in_list "${ZIA_CLOUD:-}" "$LEGACY_CLOUDS" || die "ZIA_CLOUD '${ZIA_CLOUD:-}' is not one of: ${LEGACY_CLOUDS}"
+            fi
+            if in_list ztc "$products"; then
+                require_vars ZTC_USERNAME ZTC_PASSWORD ZTC_API_KEY ZTC_CLOUD
+                in_list "${ZTC_CLOUD:-}" "$LEGACY_CLOUDS" || die "ZTC_CLOUD '${ZTC_CLOUD:-}' is not one of: ${LEGACY_CLOUDS}"
             fi
             unset ZSCALER_CLIENT_ID ZSCALER_CLIENT_SECRET ZSCALER_PRIVATE_KEY \
                   ZSCALER_VANITY_DOMAIN ZSCALER_CLOUD
@@ -128,4 +137,13 @@ configure_zscaler_auth() {
 # stack_uses_provider DIR NAME - true if any .tf in DIR declares provider NAME.
 stack_uses_provider() {
     grep -Eqs "^[[:space:]]*provider[[:space:]]+\"$2\"" "$1"/*.tf
+}
+
+# stack_products DIR - the Zscaler providers (zia, ztc) a stack declares.
+stack_products() {
+    local p out=""
+    for p in zia ztc; do
+        stack_uses_provider "$1" "$p" && out="${out} ${p}"
+    done
+    printf '%s\n' "${out# }"
 }

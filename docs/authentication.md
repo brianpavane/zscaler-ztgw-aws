@@ -27,6 +27,10 @@ API roles for:
 
 `run.sh` sets `ZSCALER_USE_LEGACY_CLIENT=false`.
 
+The Zero Trust Gateway client (`scripts/ztgw/ztgw.py`, Phase 2) supports
+**client-secret** OneAPI auth only. `run.sh` refuses a private-key-only env
+file for stacks that use `ztc`.
+
 ## Legacy API (`ZSCALER_AUTH_MODE=legacy`)
 
 For tenants not yet on ZIdentity.
@@ -38,7 +42,10 @@ For tenants not yet on ZIdentity.
 | `ZIA_CLOUD` | `zscalertwo` (ZS2) or `zscalerthree` (ZS3) |
 | `ZTC_USERNAME`, `ZTC_PASSWORD`, `ZTC_API_KEY`, `ZTC_CLOUD` | Cloud & Branch Connector admin + key (Phase 2+) |
 
-`run.sh` sets `ZSCALER_USE_LEGACY_CLIENT=true` and checks the cloud name.
+`run.sh` sets `ZSCALER_USE_LEGACY_CLIENT=true` and checks the cloud names.
+It requires only the credentials of the products a stack uses: `ZIA_*` for
+stacks that use the `zia` provider, and `ZTC_*` for stacks that use `ztc`
+(Phase 2 needs only `ZTC_*`).
 
 ## Safeguards in `run.sh`
 

@@ -12,9 +12,10 @@ run against a ZS2/ZS3 test tenant before a release.
 | `validate` | `terraform validate` | Every module and stack is internally valid against the real provider schemas |
 | `tflint` | tflint (`terraform` preset `all`, AWS ruleset) | Naming, typing, documentation, unused declarations, standard module structure |
 | `test` | `terraform test` + `mock_provider` | Module and stack behaviour: rule ordering, default action, scoping, staging, input validation, activation wiring |
-| `examples` | `terraform plan` (real providers, credential validation skipped, scrubbed env) | Each `env/example.tfvars` matches the stack's variables and passes validation with the real provider |
+| `examples` | zia stacks: `terraform plan` with the real provider, credential validation skipped, scrubbed env. ztc stacks: `terraform test -test-directory=tests/example -var-file=env/example.tfvars` (mocked) | Each `env/example.tfvars` matches the stack's variables and passes validation |
+| `python` | `py_compile` + `unittest` (`tests/python`) | Gateway client: OneAPI/Legacy URLs and auth, key obfuscation, token reuse, 401 re-auth, 429/5xx retry, spec validation, create payload, idempotent create/adopt, region checks, health timeout, update diffing, delete + location cleanup, external-data output, CLI exit codes, no secrets in output |
 | `shell` | shellcheck | Shell scripts are free of common bugs |
-| `wrapper` | `tests/scripts/test_run.sh` (stub terraform) | `run.sh`: OneAPI/Legacy switching, stale-credential scrubbing, env-file parsing and permissions, name validation, workspaces, var-files, auto-approve, destroy-time activation, no secrets on argv |
+| `wrapper` | `tests/scripts/test_run.sh` (stub terraform + python) | `run.sh`: OneAPI/Legacy switching, product-aware legacy credentials (zia/ztc), stale-credential scrubbing, env-file parsing and permissions, name validation, workspaces, var-files, auto-approve, destroy-time activation (ZIA and ZTC), no secrets on argv |
 | `checkov` | checkov | Static security checks (Terraform, GitHub Actions, committed secrets) |
 
 `QA_STRICT=1` (set in CI) makes a missing optional tool (tflint, checkov) a
@@ -26,12 +27,17 @@ CI (`.github/workflows/ci.yml`) runs the Terraform steps on Terraform
 `pre-commit install` adds fmt, tflint, shellcheck, the wrapper tests and
 secret/merge-conflict checks to every commit.
 
-### Known gap
+### Known gaps
 
 `zia_location_management.id` is declared optional (not computed) by the
 provider, so mocks cannot fill it. The `location_names` lookup is therefore
 covered by the live runbook, not by unit tests. `location_ids` is covered by
 unit tests.
+
+The gateway client is tested against an in-memory fake of the documented API,
+and the Phase 2 stack runs its provisioners as no-ops (`python = "true"`) in
+tests. The real request and response shapes are confirmed by the Phase 2 live
+runbook below.
 
 ## Live integration runbook (Phase 1)
 
@@ -51,3 +57,22 @@ Run once per framework (OneAPI and Legacy) and per cloud (ZS2, ZS3) in a
 | 9 | Same domain in both lists | Plan fails with a clear overlap error |
 | 10 | `destroy` | Objects removed, existing rule orders restored, no pending activation |
 | 11 | Repeat 1-10 with the other auth mode | Same results |
+
+## Live integration runbook (Phase 2)
+
+Run once per framework and per cloud in a **test tenant** with a test AWS
+account ID in `additional_aws_accounts`.
+
+| # | Step | Expected |
+|---|---|---|
+| 1 | `python3 -I scripts/ztgw/ztgw.py regions` (env exported) | `us-west-2` listed |
+| 2 | `run.sh <env> 02-ztgw plan` | Template, group, gateway, settings, activation planned |
+| 3 | `apply` | Health polling INIT → HEALTHY; outputs show `vpce-svc` endpoint service name and location ID |
+| 4 | Re-run `plan` | **No changes**; `gateway_ready` passes |
+| 5 | Interrupt during health polling, re-run `apply` | Existing gateway adopted, no duplicate |
+| 6 | Change `additional_aws_accounts`, `apply` | Settings updated in place (no replacement); visible in portal |
+| 7 | Add a public-cloud-account ID to `account_group_member_ids` | Only the group changes; that account can create an endpoint |
+| 8 | Phase 1 `location_names = [<location_name>]`, apply | Rules scoped to the gateway location. Confirm ZTC location ID == ZIA location ID. |
+| 9 | `destroy` | Gateway deleted, location deleted, template and group deleted, no pending activation |
+| 10 | Re-apply with the same names | Succeeds (no "location name already exists") |
+| 11 | Repeat with the other auth mode | Same results |

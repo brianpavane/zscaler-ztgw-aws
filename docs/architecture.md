@@ -60,20 +60,25 @@ groups, so scoping uses location IDs or names directly.
 rule), no SSL inspection. Without SSL inspection ZIA matches HTTPS on the
 domain only, so list entries should be domains.
 
-### Phase 2: ZT Gateway (planned)
+### Phase 2: ZT Gateway (available)
 
-`zscaler/ztc` 0.2.0 has **no** ZT Gateway resource, so creating and deleting
-the gateway needs a direct API call. Everything around it uses provider
-resources (`ztc_location_template`, `ztc_account_groups`,
-`ztc_supported_regions`). Requirements for the direct-API part:
+`zscaler/ztc` 0.2.0 and the official Go SDK have **no** Zero Trust Gateway
+support, but the Cloud & Branch Connector API documents `/ztGateway`. The
+stack uses provider resources for everything around the gateway
+(`ztc_location_template`, `ztc_account_groups`). The gateway itself is driven
+by `scripts/ztgw/ztgw.py` through `terraform_data` provisioners, and read
+back with an `external` data source:
 
-- one client supporting OneAPI and Legacy, TLS verified, stdlib only;
-- credentials passed via environment, never on a command line or in state;
-- idempotent create (adopt an existing gateway by name), health polling,
-  activation, and delete on destroy;
-- clean up the ZIA location left behind by a deleted gateway.
+- one standard-library client for OneAPI and Legacy, TLS verified,
+  credentials from the environment only (never in state or argv);
+- idempotent create (adopts an existing gateway by name in the same region),
+  health polling, activation, in-place update of mutable settings, and
+  delete with cleanup of the leftover location;
+- immutable settings (name, region, AZs, location, template) replace the
+  gateway; account settings update it in place.
 
-Outputs: endpoint service name, ZIA location ID (input to Phase 1).
+Outputs: endpoint service name (Phase 3) and location name/ID (Phase 1). See
+[phase2-ztgw.md](phase2-ztgw.md).
 
 ### Phase 3: account onboarding + VPC (planned)
 
@@ -107,7 +112,13 @@ and that egress needs no NAT/IGW in the customer VPC.
 
 ## Activation
 
-ZIA (and ZTC) changes are staged until activated, and activation covers the
-whole tenant. Each ZIA stack ends with `zia_activation_status`, re-created
-whenever the stack's inputs change. Deletions are activated by
-`scripts/run.sh` applying `stacks/zia-activate` after a `destroy`.
+ZIA and Cloud & Branch Connector changes are staged until activated, and
+activation covers the whole tenant.
+
+- **ZIA:** each ZIA stack ends with `zia_activation_status`, re-created
+  whenever the stack's inputs change. After a `destroy`, `scripts/run.sh`
+  applies `stacks/zia-activate`.
+- **Cloud & Branch Connector:** `ztgw.py` activates after every gateway
+  create, update and delete. `terraform_data.ztc_activation` activates
+  template and account-group changes. After a `destroy`, `scripts/run.sh`
+  runs `ztgw.py activate`.
