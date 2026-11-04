@@ -12,6 +12,9 @@
 #
 # Environment:
 #   AUTO_APPROVE=1    pass -auto-approve to apply/destroy (CI / unattended)
+#
+# destroy of a brownfield stack (03-account-brownfield) first restores the
+# original default routes, releases them from state, then destroys the rest.
 #   TERRAFORM_BIN     terraform binary to use (default: terraform, >= 1.7)
 #   PYTHON_BIN        python 3 used for scripts/ztgw/ztgw.py (default: python3)
 #
@@ -108,6 +111,19 @@ case "$ACTION" in
         add_var_file
         add_auto_approve
         tf_init
+        # Brownfield stacks took over existing default routes: put the
+        # original targets back, stop managing the routes, then destroy the
+        # rest, so the customer's routing is left as it was found.
+        if stack_manages_routes "$STACK_DIR"; then
+            if tf state list 2>/dev/null | grep -q '^aws_route\.default\['; then
+                info "restoring the original default routes (cutover=false)"
+                tf apply -input=false ${ARGS[@]+"${ARGS[@]}"} -var=cutover=false "$@" \
+                    || die "route restore failed; nothing was destroyed"
+                info "releasing the restored routes from Terraform state"
+                tf state rm aws_route.default >&2
+            fi
+            ARGS+=("-var=cutover=false" "-var=release_routes=true")
+        fi
         tf destroy -input=false ${ARGS[@]+"${ARGS[@]}"} "$@"
         # Deletions are not activated by the stack being destroyed.
         if in_list zia "$PRODUCTS" && [ "$STACK" != "zia-activate" ]; then

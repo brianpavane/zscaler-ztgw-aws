@@ -92,6 +92,13 @@ resource "ztc_account_groups" "consumers" {
       id = var.account_group_member_ids
     }
   }
+
+  # Membership is owned by the Phase 3 stacks (ztgw.py group-add/remove) once
+  # the group exists; account_group_member_ids only seeds it at creation.
+  # Without this, re-applying Phase 2 would remove accounts Phase 3 added.
+  lifecycle {
+    ignore_changes = [public_cloud_accounts]
+  }
 }
 
 resource "terraform_data" "gateway" {

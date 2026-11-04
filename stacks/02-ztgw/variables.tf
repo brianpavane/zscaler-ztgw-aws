@@ -83,7 +83,7 @@ variable "create_account_group" {
 }
 
 variable "account_group_member_ids" {
-  description = "Zscaler public-cloud-account IDs (Phase 3 output `public_cloud_account_id`) to place in the gateway's account group."
+  description = "Initial members of the gateway's account group (Zscaler public-cloud-account IDs), applied only when the group is created. Afterwards the Phase 3 stacks add and remove their own account."
   type        = list(number)
   default     = []
 }

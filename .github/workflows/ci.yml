@@ -69,6 +69,9 @@ jobs:
           # tflint downloads the AWS ruleset from GitHub releases.
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: shared Phase 3 files in sync
+        run: scripts/qa.sh shared
+
       - name: shellcheck
         run: scripts/qa.sh shell
 

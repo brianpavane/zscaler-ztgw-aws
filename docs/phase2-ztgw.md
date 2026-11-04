@@ -50,7 +50,8 @@ by the client; use a client secret.
 | Change | Effect |
 |---|---|
 | First apply | Template + group created → gateway created (or an existing gateway with the same name **in the same region** is adopted) → wait until `HEALTHY` (default up to 30 min) → activate → read back endpoint service name and location ID |
-| `account_group_member_ids`, `account_group_ids`, `allowed_account_ids`, `additional_aws_accounts` | Gateway updated in place (`PUT`), then activated. Group membership changes only touch the group. |
+| `account_group_ids`, `allowed_account_ids`, `additional_aws_accounts` | Gateway updated in place (`PUT`), then activated. |
+| `account_group_member_ids` | Applied only when the group is created. After that, Phase 3 manages membership (each Phase 3 stack adds its account on apply and removes it on destroy), so re-applying Phase 2 never drops accounts. |
 | `gateway_name`, `region`, `availability_zone_ids`, `location_name`, template | Gateway **replaced** (delete, then create) |
 | Destroy | Gateway deleted → wait until gone → leftover location deleted (`cleanup_location_on_destroy`) → activate. Then the template and group are deleted, and `run.sh` activates again. |
 
@@ -69,7 +70,7 @@ not `HEALTHY` shows up as a `gateway_ready` warning.
 | `existing_location_template_name` | `null` | Use an existing template instead of creating one |
 | `location_template` | firewall + IPS on | Settings for the created template |
 | `create_account_group` | `true` | Create `<gateway>-consumers` and allow it on the gateway |
-| `account_group_member_ids` | `[]` | Public-cloud-account IDs from Phase 3 |
+| `account_group_member_ids` | `[]` | Initial group members (creation only); Phase 3 manages membership afterwards |
 | `account_group_ids` | `[]` | Extra existing groups to allow |
 | `allowed_account_ids` | `[]` | Public-cloud-account IDs allowed directly |
 | `additional_aws_accounts` | `[]` | Raw AWS account IDs allowed without WDS onboarding |
@@ -81,7 +82,8 @@ not `HEALTHY` shows up as a `gateway_ready` warning.
 
 `gateway_name`, `gateway_id`, `region`, `availability_zone_ids`,
 `health_status`, `endpoint_service_name` (input to Phase 3), `location_name`
-(input to Phase 1), `location_id`, `account_group_id`, `account_group_name`.
+(input to Phase 1), `location_id`, `account_group_id` (input to Phase 3),
+`account_group_name`.
 
 ## Connecting the phases
 

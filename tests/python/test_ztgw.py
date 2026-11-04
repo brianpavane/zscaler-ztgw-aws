@@ -59,6 +59,19 @@ class FakeApi:
         self.fail_next = []          # list of (status, body) injected responses
         self.activations = 0
         self.regions = [{"id": 1, "name": "US_WEST_2", "regionName": "us-west-2"}]
+        self.wds_settings = {"trustedAccountId": "644370868001",
+                             "trustedRoleName": "ZscalerTagDiscoveryRole"}
+        self.groups = {500: {"id": 500, "name": "consumers", "cloudType": "AWS",
+                             "publicCloudAccounts": [{"id": 1, "name": "existing"}]}}
+        self.permission_failures = 0
+        self.verified = []
+        self.accounts = {}
+        self.cloud_regions = [{"id": 11, "name": "US_WEST_2", "regionName": "us-west-2",
+                               "cloudType": "AWS"},
+                              {"id": 12, "name": "US_EAST_1", "regionName": "us-east-1",
+                               "cloudType": "AWS"}]
+        self.account_create_times_out = False
+        self.account_deletes = 0
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, dict(headers), body))
@@ -117,6 +130,43 @@ class FakeApi:
         if tail.startswith("/location/") and method == "DELETE":
             self.locations.pop(int(tail.rsplit("/", 1)[1]), None)
             return 204, {}, b""
+        if tail == "/discoveryService/workloadDiscoverySettings":
+            return 200, {}, json.dumps(self.wds_settings).encode()
+        if tail.startswith("/discoveryService/") and tail.endswith("/permissions"):
+            # Real shape (zscaler-partner-integ-external-id): HTTP 200 for
+            # both outcomes, per-check status values.
+            if self.permission_failures > 0:
+                self.permission_failures -= 1
+                return 200, {}, b'{"status":{"assumeRole":"Denied"}}'
+            self.verified.append((tail.split("/")[2], json.loads(body)))
+            return 200, {}, b'{"status":{"assumeRole":"Allowed","ec2:DescribeVpcs":"Allowed"}}'
+        if tail == "/publicCloudInfo/supportedRegions":
+            return 200, {}, json.dumps(self.cloud_regions).encode()
+        if tail == "/publicCloudInfo/generateExternalId" and method == "POST":
+            req = json.loads(body)
+            return 200, {}, json.dumps({**req, "externalId": "gen-" + req["awsAccountId"]}).encode()
+        if tail == "/publicCloudInfo" and method == "GET":
+            return 200, {}, json.dumps(list(self.accounts.values())).encode()
+        if tail == "/publicCloudInfo" and method == "POST":
+            req = json.loads(body)
+            self.next_id += 1
+            self.accounts[self.next_id] = {**req, "id": self.next_id}
+            if self.account_create_times_out:
+                return 504, {}, b"gateway timeout"
+            return 200, {}, json.dumps(self.accounts[self.next_id]).encode()
+        if tail.startswith("/publicCloudInfo/") and method == "DELETE":
+            self.account_deletes += 1
+            self.accounts.pop(int(tail.rsplit("/", 1)[1]), None)
+            return 204, {}, b""
+        if tail.startswith("/accountGroups/"):
+            gid = int(tail.rsplit("/", 1)[1])
+            if gid not in self.groups:
+                return 404, {}, b'{"code":"RESOURCE_NOT_FOUND"}'
+            if method == "GET":
+                return 200, {}, json.dumps(self.groups[gid]).encode()
+            if method == "PUT":
+                self.groups[gid] = json.loads(body)
+                return 200, {}, body
         if tail == "/ecAdminActivateStatus/activate" and method == "PUT":
             self.activations += 1
             return 200, {}, json.dumps({"orgEditStatus": "ACTIVE"}).encode()
@@ -254,6 +304,15 @@ class RetryTest(unittest.TestCase):
         api.fail_next = [(429, {}), (503, {})]
         self.assertEqual(c.get("/ztGateway"), [])
 
+    def test_post_not_retried_on_5xx(self):
+        api = FakeApi()
+        c = make_client(ONEAPI_ENV, api)
+        c.get("/ztGateway")
+        api.fail_next = [(503, {})]
+        with self.assertRaisesRegex(ztgw.ZtgwError, "HTTP 503"):
+            c.request("POST", "/ztGateway", body={})
+        self.assertEqual(api.paths("POST").count("/ztw/api/v1/ztGateway"), 1)
+
     def test_gives_up(self):
         api = FakeApi()
         c = make_client(ONEAPI_ENV, api)
@@ -362,6 +421,42 @@ class CreateTest(unittest.TestCase):
                             for _, u, _, _ in api.calls))
 
 
+class CreateFailureTest(unittest.TestCase):
+    def test_failed_post_is_not_resent(self):
+        api = FakeApi(health_sequence=["HEALTHY"])
+        c = make_client(ONEAPI_ENV, api)
+        real = api.__call__
+        posts = []
+
+        def failing(method, url, headers, body):
+            if method == "POST" and url.endswith("/ztGateway"):
+                posts.append(url)
+                return 500, {}, b"internal error"  # not created
+            return real(method, url, headers, body)
+
+        c._transport = failing
+        with self.assertRaisesRegex(ztgw.ZtgwError, "HTTP 500"):
+            ztgw.cmd_create(c, dict(SPEC))
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(api.gateways, {})
+
+    def test_created_despite_error_is_adopted(self):
+        api = FakeApi(health_sequence=["HEALTHY"])
+        c = make_client(ONEAPI_ENV, api)
+        real = api.__call__
+
+        def flaky(method, url, headers, body):
+            status, h, raw = real(method, url, headers, body)
+            if method == "POST" and url.endswith("/ztGateway"):
+                return 504, {}, b"gateway timeout"  # created, but not confirmed
+            return status, h, raw
+
+        c._transport = flaky
+        gw = ztgw.cmd_create(c, dict(SPEC))
+        self.assertEqual(len(api.gateways), 1)
+        self.assertEqual(gw["name"], SPEC["name"])
+
+
 class UpdateDeleteTest(unittest.TestCase):
     def setUp(self):
         self.api = FakeApi(health_sequence=["HEALTHY"] * 50)
@@ -414,6 +509,154 @@ class UpdateDeleteTest(unittest.TestCase):
         self.assertEqual(out["endpoint_service_name"], "")
 
 
+class WdsTest(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeApi()
+        self.c = make_client(ONEAPI_ENV, self.api)
+
+    def test_settings_builds_role_arn(self):
+        out = ztgw.cmd_wds_settings(self.c)
+        self.assertEqual(out["trusted_account_id"], "644370868001")
+        self.assertEqual(out["trusted_role_arn"],
+                         "arn:aws:iam::644370868001:role/ZscalerTagDiscoveryRole")
+
+    def test_settings_passes_through_arn(self):
+        self.api.wds_settings["trustedRoleName"] = "arn:aws:iam::644370868001:role/x/y"
+        self.assertEqual(ztgw.cmd_wds_settings(self.c)["trusted_role_arn"],
+                         "arn:aws:iam::644370868001:role/x/y")
+
+    def test_settings_missing(self):
+        self.api.wds_settings = {}
+        with self.assertRaisesRegex(ztgw.ZtgwError, "Workload Discovery enabled"):
+            ztgw.cmd_wds_settings(self.c)
+
+    def test_verify_retries_until_iam_propagates(self):
+        self.api.permission_failures = 3
+        ztgw.cmd_wds_verify(self.c, {"public_cloud_account_id": 77, "role_name": "zs-discovery",
+                                     "external_id": "abc-123", "timeout_seconds": 300})
+        self.assertEqual(self.api.verified, [("77", {"discoveryRole": "zs-discovery",
+                                                     "externalId": "abc-123"})])
+
+    def test_verify_times_out(self):
+        self.api.permission_failures = 1000
+        with self.assertRaisesRegex(ztgw.ZtgwError, "verification failed after 60s"):
+            ztgw.cmd_wds_verify(self.c, {"public_cloud_account_id": 77, "role_name": "r",
+                                         "external_id": "e", "timeout_seconds": 60})
+
+    def test_verify_denied_on_http_200_is_not_success(self):
+        self.api.permission_failures = 1000
+        with self.assertRaisesRegex(ztgw.ZtgwError, "assumeRole=Denied"):
+            ztgw.cmd_wds_verify(self.c, {"public_cloud_account_id": 77, "role_name": "r",
+                                         "external_id": "e", "timeout_seconds": 30})
+        self.assertEqual(self.api.verified, [])
+
+    def test_permission_denials(self):
+        self.assertEqual(ztgw._permission_denials({"status": {"assumeRole": "Allowed"}}), [])
+        self.assertEqual(ztgw._permission_denials(
+            {"status": {"assumeRole": "Allowed", "ec2:DescribeVpcs": "Denied"}}),
+            ["ec2:DescribeVpcs=Denied"])
+        self.assertEqual(ztgw._permission_denials({"status": {"x": "Allowed"}}),
+                         ["assumeRole=missing"])
+        self.assertTrue(ztgw._permission_denials({"status": "OK"}))
+        self.assertTrue(ztgw._permission_denials(None))
+
+    def test_verify_rejects_bad_input(self):
+        for spec in ({"public_cloud_account_id": "x", "role_name": "r", "external_id": "e"},
+                     {"public_cloud_account_id": 1, "role_name": "bad role!", "external_id": "e"},
+                     {"public_cloud_account_id": 1, "role_name": "r", "external_id": "a b"}):
+            with self.subTest(spec=spec), self.assertRaises(ztgw.ZtgwError):
+                ztgw.cmd_wds_verify(self.c, spec)
+
+    def test_group_add_and_remove(self):
+        ztgw._group_change(self.c, {"group_id": 500, "public_cloud_account_id": 77}, add=True)
+        self.assertEqual([m["id"] for m in self.api.groups[500]["publicCloudAccounts"]], [1, 77])
+        self.assertEqual(self.api.groups[500]["name"], "consumers")
+        self.assertEqual(self.api.activations, 1)
+        ztgw._group_change(self.c, {"group_id": 500, "public_cloud_account_id": 77}, add=True)
+        self.assertEqual(self.api.activations, 1)  # idempotent: no second PUT/activation
+        ztgw._group_change(self.c, {"group_id": 500, "public_cloud_account_id": 77}, add=False)
+        self.assertEqual([m["id"] for m in self.api.groups[500]["publicCloudAccounts"]], [1])
+        self.assertEqual(self.api.activations, 2)
+
+    def test_group_remove_missing_group_is_ok(self):
+        ztgw._group_change(self.c, {"group_id": 999, "public_cloud_account_id": 77}, add=False)
+
+    def test_group_add_missing_group_fails(self):
+        with self.assertRaisesRegex(ztgw.ZtgwError, "not found"):
+            ztgw._group_change(self.c, {"group_id": 999, "public_cloud_account_id": 77}, add=True)
+
+
+ACCOUNT_SPEC = {"name": "aws-111122223333", "aws_account_id": "111122223333",
+                "role_name": "ZscalerTagDiscoveryRole", "regions": ["us-west-2"]}
+
+
+class AccountTest(unittest.TestCase):
+    def setUp(self):
+        self.api = FakeApi()
+        self.c = make_client(ONEAPI_ENV, self.api)
+
+    def test_register_generates_external_id(self):
+        acct = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        stored = self.api.accounts[acct["id"]]
+        self.assertEqual(stored["externalId"], "gen-111122223333")
+        self.assertEqual(stored["accountDetails"],
+                         {"awsAccountId": "111122223333", "awsRoleName": "ZscalerTagDiscoveryRole",
+                          "externalId": "gen-111122223333"})
+        self.assertEqual([r["id"] for r in stored["supportedRegions"]], [11])
+
+    def test_register_with_supplied_external_id(self):
+        acct = ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, "external_id": "shared-1"})
+        self.assertEqual(self.api.accounts[acct["id"]]["externalId"], "shared-1")
+        self.assertNotIn("/ztw/api/v1/publicCloudInfo/generateExternalId", self.api.paths())
+
+    def test_register_is_idempotent(self):
+        first = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        second = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(len(self.api.accounts), 1)
+
+    def test_register_conflicting_external_id(self):
+        ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, "external_id": "a"})
+        with self.assertRaisesRegex(ztgw.ZtgwError, "different external ID"):
+            ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, "external_id": "b"})
+
+    def test_register_recovers_from_slow_create(self):
+        # The POST creates the account but never confirms (5xx on every retry).
+        self.api.account_create_times_out = True
+        acct = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        self.assertEqual(acct["accountDetails"]["awsAccountId"], "111122223333")
+        self.assertGreaterEqual(len(self.api.accounts), 1)
+
+    def test_register_unsupported_region(self):
+        with self.assertRaisesRegex(ztgw.ZtgwError, "not supported for discovery"):
+            ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, "regions": ["eu-west-9"]})
+
+    def test_register_rejects_bad_spec(self):
+        for bad in ({"aws_account_id": "123"}, {"role_name": "a b"}, {"external_id": "x y"},
+                    {"regions": []}, {"name": ""}):
+            with self.subTest(bad=bad), self.assertRaises(ztgw.ZtgwError):
+                ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, **bad})
+
+    def test_read_and_delete(self):
+        self.assertEqual(ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})["exists"],
+                         "false")
+        acct = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        out = ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})
+        self.assertEqual(out, {"exists": "true", "id": str(acct["id"]),
+                               "external_id": "gen-111122223333", "name": "aws-111122223333"})
+        ztgw.cmd_account_delete(self.c, {"aws_account_id": "111122223333"})
+        self.assertEqual(self.api.accounts, {})
+        self.assertEqual(self.api.activations, 1)
+        ztgw.cmd_account_delete(self.c, {"aws_account_id": "111122223333"})  # idempotent
+        self.assertEqual(self.api.account_deletes, 1)
+
+    def test_duplicate_registrations_fail(self):
+        for i in (1, 2):
+            self.api.accounts[i] = {"id": i, "accountDetails": {"awsAccountId": "111122223333"}}
+        with self.assertRaisesRegex(ztgw.ZtgwError, "duplicates"):
+            ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})
+
+
 class CliTest(unittest.TestCase):
     def run_main(self, argv, env, stdin="", api=None):
         api = api or FakeApi(health_sequence=["HEALTHY"] * 10)
@@ -460,6 +703,41 @@ class CliTest(unittest.TestCase):
         rc, _, err = self.run_main(["ztgw.py", "delete"], ONEAPI_ENV)
         self.assertEqual(rc, 1)
         self.assertIn("ZTGW_SPEC is not set", err)
+
+    def test_wds_settings_cli(self):
+        rc, out, err = self.run_main(["ztgw.py", "wds-settings"], LEGACY_ENV, stdin="{}")
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(json.loads(out)["trusted_role_arn"].startswith("arn:aws:iam::"))
+
+    def test_group_add_cli(self):
+        api = FakeApi()
+        env = {**ONEAPI_ENV, "ZTGW_GROUP": json.dumps({"group_id": 500,
+                                                      "public_cloud_account_id": 9})}
+        rc, _, err = self.run_main(["ztgw.py", "group-add"], env, api=api)
+        self.assertEqual(rc, 0, err)
+        self.assertIn({"id": 9}, api.groups[500]["publicCloudAccounts"])
+
+    def test_account_register_and_read_cli(self):
+        api = FakeApi()
+        env = {**ONEAPI_ENV, "ZTGW_ACCOUNT": json.dumps(ACCOUNT_SPEC)}
+        rc, _, err = self.run_main(["ztgw.py", "account-register"], env, api=api)
+        self.assertEqual(rc, 0, err)
+        rc, out, err = self.run_main(["ztgw.py", "account-read"], ONEAPI_ENV, api=api,
+                                     stdin=json.dumps({"aws_account_id": "111122223333"}))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["external_id"], "gen-111122223333")
+
+    def test_account_register_cli_bad_spec_fails_before_auth(self):
+        api = FakeApi()
+        env = {**ONEAPI_ENV, "ZTGW_ACCOUNT": json.dumps({**ACCOUNT_SPEC, "aws_account_id": "1"})}
+        rc, _, err = self.run_main(["ztgw.py", "account-register"], env, api=api)
+        self.assertEqual(rc, 1)
+        self.assertEqual(api.calls, [])
+
+    def test_wds_verify_cli_missing_spec(self):
+        rc, _, err = self.run_main(["ztgw.py", "wds-verify"], ONEAPI_ENV)
+        self.assertEqual(rc, 1)
+        self.assertIn("ZTGW_WDS is not set", err)
 
     def test_regions(self):
         rc, out, _ = self.run_main(["ztgw.py", "regions"], LEGACY_ENV)

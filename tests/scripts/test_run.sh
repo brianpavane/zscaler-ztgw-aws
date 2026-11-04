@@ -23,7 +23,7 @@ FAIL=0
 # --- sandbox: a copy of the repo's scripts + a minimal stack layout ---------
 mkdir -p "$WORK/repo/scripts/lib" "$WORK/repo/scripts/ztgw" "$WORK/repo/config" \
          "$WORK/repo/stacks/s1/env" "$WORK/repo/stacks/gw/env" \
-         "$WORK/repo/stacks/zia-activate" "$WORK/bin"
+         "$WORK/repo/stacks/zia-activate" "$WORK/repo/stacks/bf/env" "$WORK/bin"
 cp "$REPO_ROOT/scripts/run.sh" "$WORK/repo/scripts/run.sh"
 cp "$REPO_ROOT/scripts/lib/common.sh" "$WORK/repo/scripts/lib/common.sh"
 printf 'provider "zia" {}\n' > "$WORK/repo/stacks/s1/providers.tf"
@@ -31,6 +31,8 @@ printf 'provider "zia" {}\n' > "$WORK/repo/stacks/zia-activate/providers.tf"
 printf 'name_prefix = "t"\n' > "$WORK/repo/stacks/s1/env/t1.tfvars"
 printf 'provider "ztc" {}\n' > "$WORK/repo/stacks/gw/providers.tf"
 printf 'region = "us-west-2"\n' > "$WORK/repo/stacks/gw/env/t1.tfvars"
+printf 'provider "ztc" {}\nprovider "aws" {}\nvariable "release_routes" {}\n' > "$WORK/repo/stacks/bf/providers.tf"
+printf 'vpc_id = "vpc-1"\n' > "$WORK/repo/stacks/bf/env/t1.tfvars"
 : > "$WORK/repo/scripts/ztgw/ztgw.py"
 
 # Stub python: records the client invocation instead of calling the API.
@@ -44,6 +46,10 @@ LOG="$WORK/tf.log"
 cat > "$WORK/bin/terraform" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "version" ]; then echo "Terraform v${STUB_TF_VERSION:-1.9.8}"; exit 0; fi
+for a in "$@"; do
+  if [ "$a" = "list" ] && [ -n "${STUB_STATE_LIST:-}" ]; then printf '%s\n' "$STUB_STATE_LIST"; fi
+  if [ "$a" = "apply" ] && [ -n "${STUB_FAIL_APPLY:-}" ]; then printf 'ARGS: (failed) %s\n' "$*" >> "$STUB_LOG"; exit 1; fi
+done
 {
   printf 'ARGS:'; printf ' %s' "$@"; printf '\n'
   for v in ZSCALER_USE_LEGACY_CLIENT ZSCALER_CLIENT_ID ZSCALER_CLIENT_SECRET ZSCALER_VANITY_DOMAIN \
@@ -251,6 +257,36 @@ expect_rc 0 "ztc stack destroy succeeds"
 expect_log "PYTHON: -I .*scripts/ztgw/ztgw.py activate" "ztc destroy runs client activation"
 expect_not_log "zia-activate" "ztc-only stack does not run ZIA activation"
 EXTRA_ENV=()
+
+# 8. Brownfield destroy restores routes, releases them, then destroys
+write_env t1 "$ONEAPI_ENV"
+EXTRA_ENV=(AUTO_APPROVE=1 PYTHON_BIN="$WORK/bin/python-stub" 'STUB_STATE_LIST=aws_route.default["usw2-az1"]')
+run_wrapper t1 bf destroy
+expect_rc 0 "brownfield destroy succeeds"
+expect_log "stacks/bf apply .*-var=cutover=false" "routes restored with cutover=false first"
+expect_log "stacks/bf state rm aws_route.default" "restored routes released from state"
+expect_log "stacks/bf destroy .*-var=release_routes=true" "destroy runs with release_routes=true"
+if grep -n 'stacks/bf' "$LOG" | awk -F: '/ apply /{a=$1} / state rm /{r=$1} / destroy /{d=$1} END{exit !(a<r && r<d)}'; then
+    ok "restore, release, destroy run in that order"
+else
+    fail "restore, release, destroy run in that order"; cat "$LOG"
+fi
+
+EXTRA_ENV=(AUTO_APPROVE=1 PYTHON_BIN="$WORK/bin/python-stub" STUB_STATE_LIST=)
+run_wrapper t1 bf destroy
+expect_rc 0 "brownfield destroy with no managed routes succeeds"
+expect_not_log "stacks/bf apply" "no restore apply when no routes are in state"
+expect_log "stacks/bf destroy .*-var=release_routes=true" "destroy still releases routes"
+
+EXTRA_ENV=(AUTO_APPROVE=1 PYTHON_BIN="$WORK/bin/python-stub" 'STUB_STATE_LIST=aws_route.default["usw2-az1"]' STUB_FAIL_APPLY=1)
+run_wrapper t1 bf destroy
+expect_rc 1 "failed route restore aborts destroy"
+expect_not_log "stacks/bf destroy" "nothing destroyed after a failed restore"
+expect_not_log "state rm" "routes not released after a failed restore"
+EXTRA_ENV=()
+
+run_wrapper t1 gw destroy
+expect_not_log "release_routes" "non-brownfield destroy unchanged"
 
 echo
 echo "passed: ${PASS}  failed: ${FAIL}"

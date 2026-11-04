@@ -26,8 +26,8 @@
                                       │                              │
  Phase 3  stacks/03-account-*          │     customer AWS account     │
  ───────────────────────────────────  │     ──────────────────────── ▼ ────
-  WDS onboarding: IAM role + EventBridge
-  ztc_public_cloud_info ── member of ─┘      per AZ:
+  WDS onboarding: discovery IAM role
+  account registration ── member of ──┘      per AZ:
   VPC (greenfield) or existing VPC              endpoint subnet + GWLB endpoint
                                                 private subnet(s) + route table
                                                   0.0.0.0/0 ─► same-AZ endpoint
@@ -80,22 +80,29 @@ back with an `external` data source:
 Outputs: endpoint service name (Phase 3) and location name/ID (Phase 1). See
 [phase2-ztgw.md](phase2-ztgw.md).
 
-### Phase 3: account onboarding + VPC (planned)
+### Phase 3: account onboarding + VPC (available)
 
-WDS onboarding is part of Phase 3 rather than a separate phase:
+Details: [phase3-account.md](phase3-account.md). WDS onboarding is part of
+Phase 3 rather than a separate phase:
 
-1. AWS IAM role trusted by the Zscaler AWS account (with external ID), plus
-   the EventBridge rule that forwards events to the Zscaler event bus.
-2. `ztc_public_cloud_info` registers the account.
+1. The account is registered in Partner Integrations (client), and Zscaler
+   generates its external ID.
+2. A discovery IAM role, equivalent to Zscaler's CloudFormation template
+   v1.0.1, trusts Zscaler's role with that external ID. Zscaler then verifies
+   it. The template has no EventBridge part, so none is created.
 3. The account joins the account group the gateway allows. The gateway
    itself is not modified when accounts are added.
 4. VPC side: one endpoint subnet + GWLB endpoint per AZ, one route table per
    AZ with `0.0.0.0/0` pointing to the **same-AZ** endpoint.
 
+AWS credentials are either for the customer account (direct) or for a central
+account that assumes a role in it. In both cases the provider is locked to
+`aws_account_id`.
+
 Greenfield builds a new VPC. Brownfield attaches to an existing VPC (one route
-table per AZ assumed). It records each route table's original default-route
-target, replaces it with the endpoint, and restores the original target on
-destroy instead of deleting the route.
+table per AZ, checked at plan time). It imports each default route, records
+its original target, swaps it to the endpoint in place, and restores it on
+rollback (`cutover = false`) or destroy.
 
 **To verify in the test tenant:** that account-group membership changes
 reach the gateway's endpoint-service allow list without a gateway update,

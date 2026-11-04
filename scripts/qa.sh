@@ -9,6 +9,7 @@
 #
 # Steps (default: all, in this order):
 #   fmt        terraform fmt -check -recursive
+#   shared     files shared by the Phase 3 stacks are identical copies
 #   validate   terraform init -backend=false && validate, every module + stack
 #   tflint     tflint on every module + stack (.tflint.hcl)
 #   test       terraform test (mocked providers) in every dir with tests/
@@ -179,6 +180,35 @@ step_python() {
     fi
 }
 
+# Files the two Phase 3 stacks share. They are kept as copies (not symlinks)
+# so each stack directory is self-contained; this step keeps them in sync.
+# variables.tf / outputs.tf are shared only above the stack-specific marker.
+SHARED_PHASE3_FILES="versions.tf providers.tf onboarding.tf"
+SHARED_PHASE3_PARTIAL="variables.tf outputs.tf"
+SHARED_MARKER="# ---- stack-specific (below this line)"
+
+shared_part() { awk -v m="$SHARED_MARKER" 'index($0, m) == 1 {exit} {print}' "$1"; }
+
+step_shared() {
+    say "shared Phase 3 files"
+    local f bad=0 g=stacks/03-account-greenfield b=stacks/03-account-brownfield
+    for f in $SHARED_PHASE3_FILES; do
+        if cmp -s "$g/$f" "$b/$f"; then echo "identical: $f"
+        else echo "DIFFERENT: $f"; diff -u "$g/$f" "$b/$f" | head -40; bad=1; fi
+    done
+    for f in $SHARED_PHASE3_PARTIAL; do
+        if ! grep -q "^${SHARED_MARKER}" "$g/$f" || ! grep -q "^${SHARED_MARKER}" "$b/$f"; then
+            echo "MISSING MARKER in $f"; bad=1
+        elif [ "$(shared_part "$g/$f")" = "$(shared_part "$b/$f")" ]; then
+            echo "identical (shared part): $f"
+        else
+            echo "DIFFERENT (shared part): $f"
+            diff -u <(shared_part "$g/$f") <(shared_part "$b/$f") | head -40; bad=1
+        fi
+    done
+    if [ "$bad" = 0 ]; then record shared PASS; else record shared FAIL; fi
+}
+
 step_shell() {
     say "shellcheck"
     have shellcheck || { missing_tool shell shellcheck; return; }
@@ -204,7 +234,7 @@ step_checkov() {
     fi
 }
 
-ALL="fmt validate tflint test examples python shell wrapper checkov"
+ALL="fmt shared validate tflint test examples python shell wrapper checkov"
 STEPS="${*:-$ALL}"
 
 for s in $STEPS; do

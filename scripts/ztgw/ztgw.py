@@ -15,6 +15,21 @@ resource, so stacks/02-ztgw drives this client from Terraform:
   activate  activate pending Cloud & Branch Connector changes
   regions   print the AWS regions the tenant supports for ZTGW
 
+Workload Discovery (WDS) onboarding, used by the Phase 3 stacks:
+
+  wds-settings      `external` data source: Zscaler's trusted discovery role
+                    (trusted_account_id, trusted_role_name, trusted_role_arn)
+  account-register  register an AWS account in Partner Integrations
+                    (idempotent: adopts an existing registration)
+                                                        spec: ZTGW_ACCOUNT env
+  account-read      `external` data source: {exists, id, external_id, name}
+                    for the AWS account in the stdin query {aws_account_id}
+  account-delete    remove the registration (idempotent)  spec: ZTGW_ACCOUNT env
+  wds-verify        ask Zscaler to verify the discovery role in the customer
+                    account; retries while IAM propagates   spec: ZTGW_WDS env
+  group-add      add a public cloud account to an account group, activate
+  group-remove   remove it again (idempotent)            spec: ZTGW_GROUP env
+
 API: Cloud & Branch Connector API, /ztGateway endpoints
 (https://automate.zscaler.com, "Zero Trust Gateway").
 
@@ -85,6 +100,8 @@ def urllib_transport(method: str, url: str, headers: Dict[str, str],
         return e.code, dict(e.headers.items()) if e.headers else {}, e.read() or b""
     except urllib.error.URLError as e:
         raise ZtgwError(f"{method} {url.split('?')[0]}: {e.reason}") from None
+    except (TimeoutError, OSError) as e:  # read timeouts are not always URLError
+        raise ZtgwError(f"{method} {url.split('?')[0]}: {e}") from None
 
 
 # --------------------------------------------------------------------------
@@ -245,7 +262,10 @@ class Client:
                 reauthed = True
                 self._token, self._session = None, None
                 continue
-            if status == 429 or status >= 500:
+            # POST creates are not idempotent: a 5xx may arrive after the
+            # object was created, so the caller looks it up instead of the
+            # request being re-sent (which would create a duplicate).
+            if status == 429 or (status >= 500 and method != "POST"):
                 retry_after = next((v for k, v in resp_headers.items()
                                     if k.lower() == "retry-after"), "")
                 delay = float(retry_after) if retry_after.isdigit() else min(2 ** attempt, 30)
@@ -443,7 +463,11 @@ def cmd_create(c: Client, spec: Dict[str, Any]) -> Dict[str, Any]:
             if "pending activation" in str(e).lower():
                 raise ZtgwError(f"{e}. Another change in the tenant is waiting for "
                                 "activation; review it, then run: ztgw.py activate") from None
-            raise
+            # A failed or timed-out POST may still have created the gateway.
+            created = find_gateway(c, name)
+            if not created:
+                raise
+            log(f"create did not confirm ({e}), but gateway '{name}' exists; adopting")
         if not isinstance(created, dict) or "id" not in created:
             raise ZtgwError("create returned no gateway id")
         gw_id = int(created["id"])
@@ -538,30 +562,279 @@ def cmd_read(c: Client, query: Dict[str, Any]) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------
+# Workload Discovery (WDS) onboarding
+# --------------------------------------------------------------------------
+
+ROLE_NAME_RE = re.compile(r"^[A-Za-z0-9+=,.@_-]{1,64}$")
+EXTERNAL_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,1224}$")
+
+
+def _load_env_json(var: str) -> Dict[str, Any]:
+    raw = os.environ.get(var, "")
+    if not raw:
+        raise ZtgwError(f"{var} is not set")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise ZtgwError(f"{var} is not valid JSON") from None
+    if not isinstance(data, dict):
+        raise ZtgwError(f"{var} must be a JSON object")
+    return data
+
+
+def _positive_int(data: Dict[str, Any], key: str) -> int:
+    try:
+        value = int(str(data.get(key, "")))
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ZtgwError(f"'{key}' must be a positive integer")
+    return value
+
+
+def cmd_wds_settings(c: Client) -> Dict[str, str]:
+    data = c.get("/discoveryService/workloadDiscoverySettings")
+    if not isinstance(data, dict):
+        raise ZtgwError("workloadDiscoverySettings returned no data")
+    account = str(data.get("trustedAccountId") or "")
+    role = str(data.get("trustedRoleName") or data.get("trustedRole") or "")
+    if not AWS_ACCOUNT_RE.match(account) or not role:
+        raise ZtgwError("workloadDiscoverySettings did not return a trusted account and role; "
+                        "is Workload Discovery enabled for this tenant?")
+    arn = role if role.startswith("arn:") else f"arn:aws:iam::{account}:role/{role.lstrip('/')}"
+    return {"trusted_account_id": account, "trusted_role_name": role, "trusted_role_arn": arn}
+
+
+def find_account(c: Client, aws_account_id: str) -> Optional[Dict[str, Any]]:
+    matches = [a for a in _as_list(c.get("/publicCloudInfo"))
+               if str((a.get("accountDetails") or {}).get("awsAccountId", "")) == aws_account_id]
+    if len(matches) > 1:
+        raise ZtgwError(f"{len(matches)} Partner Integrations entries for AWS account "
+                        f"{aws_account_id}; remove the duplicates in the portal")
+    return matches[0] if matches else None
+
+
+def _account_external_id(acct: Dict[str, Any]) -> str:
+    return str(acct.get("externalId") or (acct.get("accountDetails") or {}).get("externalId") or "")
+
+
+def validate_account_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    acct = str(spec.get("aws_account_id", ""))
+    if not AWS_ACCOUNT_RE.match(acct):
+        raise ZtgwError(f"invalid aws_account_id {acct!r}")
+    if not NAME_RE.match(str(spec.get("name", ""))):
+        raise ZtgwError(f"invalid account name {spec.get('name')!r}")
+    if not ROLE_NAME_RE.match(str(spec.get("role_name", ""))):
+        raise ZtgwError(f"invalid role_name {spec.get('role_name')!r}")
+    ext = spec.get("external_id") or ""
+    if ext and not EXTERNAL_ID_RE.match(str(ext)):
+        raise ZtgwError("invalid external_id (allowed: letters, digits, '-')")
+    regions = spec.get("regions") or []
+    if not isinstance(regions, list) or not regions or \
+            not all(isinstance(r, str) and REGION_RE.match(r) for r in regions):
+        raise ZtgwError("regions must be a non-empty list of AWS region names")
+    return spec
+
+
+def _select_regions(c: Client, wanted: List[str]) -> List[Dict[str, Any]]:
+    available = _as_list(c.get("/publicCloudInfo/supportedRegions"))
+    chosen, missing = [], []
+    for region in wanted:
+        hit = next((r for r in available
+                    if _norm_region(region) in {_norm_region(r.get(k)) for k in ("name", "regionName")}),
+                   None)
+        (chosen.append(hit) if hit else missing.append(region))
+    if missing:
+        names = sorted({str(r.get("regionName") or r.get("name")) for r in available})
+        raise ZtgwError(f"region(s) {', '.join(missing)} not supported for discovery "
+                        f"(supported: {', '.join(names) or 'none listed'})")
+    return chosen
+
+
+ACCOUNT_APPEAR_TIMEOUT = 600
+
+
+def cmd_account_register(c: Client, spec: Dict[str, Any]) -> Dict[str, Any]:
+    validate_account_spec(spec)
+    aws_id = str(spec["aws_account_id"])
+    wanted_ext = str(spec.get("external_id") or "")
+    existing = find_account(c, aws_id)
+    if existing:
+        have = _account_external_id(existing)
+        if wanted_ext and have and have != wanted_ext:
+            raise ZtgwError(f"AWS account {aws_id} is already registered (id {existing.get('id')}) "
+                            "with a different external ID; delete it in the portal or set "
+                            "external_id to the registered value")
+        log(f"AWS account {aws_id} already registered (id {existing.get('id')}); adopting")
+        return existing
+
+    regions = _select_regions(c, list(spec["regions"]))
+    role = str(spec["role_name"])
+    ext = wanted_ext
+    if not ext:
+        gen = c.request("POST", "/publicCloudInfo/generateExternalId",
+                        body={"awsAccountId": aws_id, "awsRoleName": role})[1]
+        ext = _account_external_id(gen) if isinstance(gen, dict) else ""
+        if not EXTERNAL_ID_RE.match(ext):
+            raise ZtgwError("generateExternalId returned no usable external ID")
+    payload = {
+        "name": spec["name"], "cloudType": "AWS", "externalId": ext,
+        "accountDetails": {"awsAccountId": aws_id, "awsRoleName": role, "externalId": ext},
+        "supportedRegions": regions,
+    }
+    log(f"registering AWS account {aws_id} as '{spec['name']}' (can take several minutes)")
+    try:
+        created = c.request("POST", "/publicCloudInfo", body=payload)[1]
+        if isinstance(created, dict) and created.get("id"):
+            return created
+    except ZtgwError as e:
+        # The create call is slow and may time out (or 5xx) although the
+        # account is created; look it up before declaring failure.
+        log(f"create did not confirm ({e}); checking whether the account was created")
+    deadline = c._clock() + ACCOUNT_APPEAR_TIMEOUT
+    while True:
+        found = find_account(c, aws_id)
+        if found:
+            return found
+        if c._clock() >= deadline:
+            raise ZtgwError(f"AWS account {aws_id} was not registered")
+        c._sleep(POLL_INTERVAL)
+
+
+def cmd_account_read(c: Client, query: Dict[str, Any]) -> Dict[str, str]:
+    aws_id = str(query.get("aws_account_id", ""))
+    if not AWS_ACCOUNT_RE.match(aws_id):
+        raise ZtgwError(f"account-read: invalid aws_account_id {aws_id!r}")
+    acct = find_account(c, aws_id)
+    if not acct:
+        return {"exists": "false", "id": "", "external_id": "", "name": ""}
+    return {"exists": "true", "id": str(acct.get("id", "")),
+            "external_id": _account_external_id(acct), "name": str(acct.get("name", ""))}
+
+
+def cmd_account_delete(c: Client, spec: Dict[str, Any]) -> None:
+    aws_id = str(spec.get("aws_account_id", ""))
+    if not AWS_ACCOUNT_RE.match(aws_id):
+        raise ZtgwError(f"invalid aws_account_id {aws_id!r}")
+    acct = find_account(c, aws_id)
+    if not acct:
+        log(f"AWS account {aws_id} not registered; nothing to delete")
+        return
+    log(f"deleting Partner Integrations account {acct.get('id')} ({aws_id})")
+    c.request("DELETE", f"/publicCloudInfo/{int(acct['id'])}", ok_statuses=(200, 204, 404))
+    activate(c)
+
+
+def _permission_denials(result: Any) -> List[str]:
+    """Checks that are not 'Allowed' in a permissions response.
+
+    The endpoint answers HTTP 200 for both outcomes, e.g.
+    {"status": {"assumeRole": "Allowed", "ec2:DescribeVpcs": "Denied"}}.
+    """
+    status = result.get("status") if isinstance(result, dict) else None
+    if not isinstance(status, dict) or not status:
+        return ["no permission status in response"]
+    denied = [f"{k}={v}" for k, v in status.items() if v != "Allowed"]
+    if status.get("assumeRole") != "Allowed" and not any(d.startswith("assumeRole=") for d in denied):
+        denied.insert(0, "assumeRole=missing")
+    return denied
+
+
+def cmd_wds_verify(c: Client, spec: Dict[str, Any]) -> None:
+    account_id = _positive_int(spec, "public_cloud_account_id")
+    role = str(spec.get("role_name", ""))
+    external_id = str(spec.get("external_id", ""))
+    if not ROLE_NAME_RE.match(role):
+        raise ZtgwError(f"invalid role_name {role!r}")
+    if not EXTERNAL_ID_RE.match(external_id):
+        raise ZtgwError("invalid external_id")
+    timeout = int(spec.get("timeout_seconds", 300))
+    deadline = c._clock() + timeout
+    body = {"discoveryRole": role, "externalId": external_id}
+    while True:
+        try:
+            _, result = c.request("PUT", f"/discoveryService/{account_id}/permissions", body=body)
+            denied = _permission_denials(result)
+        except ZtgwError as e:
+            denied = [str(e)]
+        if not denied:
+            log(f"discovery role '{role}' verified for public cloud account {account_id}")
+            return
+        if c._clock() >= deadline:
+            raise ZtgwError(f"discovery role verification failed after {timeout}s: "
+                            f"{', '.join(denied)}")
+        log(f"not yet allowed ({', '.join(denied)}); IAM may still be propagating, retrying")
+        c._sleep(POLL_INTERVAL)
+
+
+def _group_change(c: Client, spec: Dict[str, Any], add: bool) -> None:
+    group_id = _positive_int(spec, "group_id")
+    account_id = _positive_int(spec, "public_cloud_account_id")
+    _, group = c.request("GET", f"/accountGroups/{group_id}", ok_statuses=(200, 404))
+    if not isinstance(group, dict) or not group.get("id"):
+        if add:
+            raise ZtgwError(f"account group {group_id} not found")
+        log(f"account group {group_id} not found; nothing to remove")
+        return
+    members = [m for m in group.get("publicCloudAccounts") or [] if isinstance(m, dict)]
+    present = any(int(m.get("id", 0)) == account_id for m in members)
+    if add == present:
+        log(f"account {account_id} already {'in' if add else 'absent from'} group {group_id}")
+        return
+    if add:
+        members.append({"id": account_id})
+    else:
+        members = [m for m in members if int(m.get("id", 0)) != account_id]
+    body = {k: group[k] for k in ("id", "name", "description", "cloudType",
+                                  "cloudConnectorGroups") if k in group}
+    body["publicCloudAccounts"] = [{"id": int(m["id"])} for m in members]
+    log(f"{'adding' if add else 'removing'} account {account_id} "
+        f"{'to' if add else 'from'} group {group_id}")
+    c.request("PUT", f"/accountGroups/{group_id}", body=body)
+    activate(c)
+
+
+# --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 
-USAGE = "usage: ztgw.py {create|update|delete|read|activate|regions}"
+COMMANDS = ("create", "update", "delete", "read", "activate", "regions",
+            "wds-settings", "wds-verify", "group-add", "group-remove",
+            "account-register", "account-read", "account-delete")
+USAGE = "usage: ztgw.py {" + "|".join(COMMANDS) + "}"
 
 
 def main(argv: List[str], client_factory: Callable[[], Client] = Client) -> int:
-    if len(argv) != 2 or argv[1] not in ("create", "update", "delete", "read",
-                                         "activate", "regions"):
+    if len(argv) != 2 or argv[1] not in COMMANDS:
         print(USAGE, file=sys.stderr)
         return 2
     cmd = argv[1]
     try:
-        if cmd == "read":
+        # Parse all input before authenticating, so bad input fails fast.
+        query: Dict[str, Any] = {}
+        spec: Dict[str, Any] = {}
+        if cmd in ("read", "wds-settings", "account-read"):
             try:
                 query = json.loads(sys.stdin.read() or "{}")
             except ValueError:
-                raise ZtgwError("read: stdin is not valid JSON") from None
-        else:
-            spec = load_spec() if cmd in ("create", "update", "delete") else {}
+                raise ZtgwError(f"{cmd}: stdin is not valid JSON") from None
+        elif cmd in ("create", "update", "delete"):
+            spec = load_spec()
+        elif cmd == "wds-verify":
+            spec = _load_env_json("ZTGW_WDS")
+        elif cmd in ("group-add", "group-remove"):
+            spec = _load_env_json("ZTGW_GROUP")
+        elif cmd == "account-register":
+            spec = validate_account_spec(_load_env_json("ZTGW_ACCOUNT"))
+        elif cmd == "account-delete":
+            spec = _load_env_json("ZTGW_ACCOUNT")
+
         c = client_factory()
         try:
             if cmd == "read":
                 print(json.dumps(cmd_read(c, query)))
+            elif cmd == "wds-settings":
+                print(json.dumps(cmd_wds_settings(c)))
             elif cmd == "create":
                 gw = cmd_create(c, spec)
                 log(f"gateway ready: endpoint service {gw.get('endpointServiceName', '?')}")
@@ -574,6 +847,19 @@ def main(argv: List[str], client_factory: Callable[[], Client] = Client) -> int:
             elif cmd == "regions":
                 for r in _as_list(c.get("/ztGateway/supportedRegions", platform="AWS")):
                     print(r.get("regionName") or r.get("name"))
+            elif cmd == "wds-verify":
+                cmd_wds_verify(c, spec)
+            elif cmd == "group-add":
+                _group_change(c, spec, add=True)
+            elif cmd == "group-remove":
+                _group_change(c, spec, add=False)
+            elif cmd == "account-register":
+                acct = cmd_account_register(c, spec)
+                log(f"account registered: id {acct.get('id')}")
+            elif cmd == "account-read":
+                print(json.dumps(cmd_account_read(c, query)))
+            elif cmd == "account-delete":
+                cmd_account_delete(c, spec)
         finally:
             c.close()
     except ZtgwError as e:

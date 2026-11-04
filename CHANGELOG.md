@@ -7,6 +7,23 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Phase 3: `stacks/03-account-greenfield` (new VPC) and
+  `stacks/03-account-brownfield` (existing VPC). Both onboard the account to
+  Workload Discovery (registration, discovery role, verification, account
+  group membership) and add one GWLB endpoint per AZ, with each AZ's private
+  default route going through the Zero Trust Gateway.
+- Phase 3 AWS authentication: direct or assume-role, with the provider locked
+  to `aws_account_id`.
+- Brownfield route takeover: existing default routes are imported, their
+  targets recorded and swapped in place. `cutover = false` rolls back, and
+  `run.sh destroy` restores the routes and then releases them from state.
+  Plan-time checks enforce one route table per AZ.
+- Modules: `ztgw-account-onboarding`, `aws-wds-role` (Zscaler discovery-role
+  template v1.0.1 as Terraform), `ztgw-vpc-greenfield`, `ztgw-gwlb-endpoints`.
+- `ztgw.py`: `wds-settings`, `account-register`, `account-read`,
+  `account-delete`, `wds-verify`, `group-add`, `group-remove`.
+- QA: a `shared` step that keeps the Phase 3 stacks' common files identical,
+  plus Terraform, Python and wrapper tests for all of the above.
 - Phase 2: `stacks/02-ztgw`. Zero Trust Gateway in AWS (default `us-west-2`,
   `usw2-az1..3`, configurable), with a location template, a consumer account
   group, health polling, in-place updates, and destroy-time location cleanup.
@@ -17,10 +34,18 @@ All notable changes to this project are documented here. The format follows
   product-aware wrapper tests.
 
 ### Changed
+- Phase 2: the account group's membership is only seeded by
+  `account_group_member_ids` at creation. Afterwards the Phase 3 stacks
+  manage it, so re-applying Phase 2 never removes their accounts.
 - `run.sh`: Legacy mode requires only the credentials of the products a stack
   uses. `destroy` of a ztc stack activates Cloud & Branch Connector changes.
 
 ### Fixed
+- `ztgw.py` re-sent a POST after a 5xx. A create that succeeded slowly could
+  then be duplicated. POSTs are no longer retried on 5xx, and the gateway and
+  account creates confirm by lookup.
+- `ztgw.py`: socket read timeouts are reported as errors instead of
+  tracebacks.
 - `run.sh --help` exited with an error.
 - Phase 1: `modules/zia-url-policy` and `stacks/01-zia-url-policy`. ZIA URL
   filtering policy with allow and block lists, a default ALLOW/BLOCK action,

@@ -139,6 +139,12 @@ stack_uses_provider() {
     grep -Eqs "^[[:space:]]*provider[[:space:]]+\"$2\"" "$1"/*.tf
 }
 
+# stack_manages_routes DIR - true for stacks that take over existing routes
+# (they declare the release_routes variable used by run.sh destroy).
+stack_manages_routes() {
+    grep -Eqs '^[[:space:]]*variable[[:space:]]+"release_routes"' "$1"/*.tf
+}
+
 # stack_products DIR - the Zscaler providers (zia, ztc) a stack declares.
 stack_products() {
     local p out=""

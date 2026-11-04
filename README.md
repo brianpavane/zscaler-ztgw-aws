@@ -6,8 +6,13 @@ on the official providers:
 | Provider | Used for |
 |---|---|
 | [`zscaler/zia`](https://registry.terraform.io/providers/zscaler/zia/latest) | URL filtering policy, location lookup, activation |
-| [`zscaler/ztc`](https://registry.terraform.io/providers/zscaler/ztc/latest) | Cloud & Branch Connector: account onboarding (WDS), account groups, location templates (Phase 2+) |
-| [`hashicorp/aws`](https://registry.terraform.io/providers/hashicorp/aws/latest) | VPC, subnets, route tables, GWLB endpoints, IAM, EventBridge (Phase 2+) |
+| [`zscaler/ztc`](https://registry.terraform.io/providers/zscaler/ztc/latest) | Cloud & Branch Connector: location templates, account groups (Phase 2+) |
+| [`hashicorp/aws`](https://registry.terraform.io/providers/hashicorp/aws/latest) | VPC, subnets, route tables, GWLB endpoints, WDS discovery role (Phase 3) |
+
+The Zero Trust Gateway and Workload Discovery account registration have no
+provider resources; a standard-library client
+([`scripts/ztgw/ztgw.py`](scripts/ztgw/ztgw.py)) calls Zscaler's documented
+API for them, run by Terraform.
 
 Both Zscaler API frameworks are supported for every phase: **OneAPI**
 (ZIdentity OAuth2) and the **Legacy API** (username / password / API key),
@@ -20,8 +25,8 @@ selected per tenant with one setting. Target clouds: production **ZS2**
 |---|---|---|
 | 1. ZIA URL filtering policy: allow list, block list, default ALLOW/BLOCK | [`stacks/01-zia-url-policy`](stacks/01-zia-url-policy) | **Available** |
 | 2. ZT Gateway in AWS (region + AZs), attached to the Phase 1 policy | [`stacks/02-ztgw`](stacks/02-ztgw) | **Available** |
-| 3. Account onboarding (WDS: IAM + EventBridge, account group) + new VPC: per-AZ subnets/route tables, GWLB endpoints, default route via ZTGW | `stacks/03-account-greenfield` | Planned |
-| 3b. As 3, but attach to an existing VPC and replace its default routes (reversibly) | `stacks/03-account-brownfield` | Planned |
+| 3. Account onboarding (WDS discovery role, account group) + new VPC: per-AZ subnets/route tables, GWLB endpoints, default route via ZTGW | [`stacks/03-account-greenfield`](stacks/03-account-greenfield) | **Available** |
+| 3b. As 3, but in an existing VPC: replace its per-AZ default routes (restored on rollback/destroy) | [`stacks/03-account-brownfield`](stacks/03-account-brownfield) | **Available** |
 
 See [docs/architecture.md](docs/architecture.md) for the full design and how
 the phases connect.
@@ -71,6 +76,22 @@ scripts/run.sh zs2 01-zia-url-policy apply
 Phase 2 also needs Python 3 (standard library only) for the gateway client.
 Details: [docs/phase2-ztgw.md](docs/phase2-ztgw.md).
 
+## Quick start (Phase 3)
+
+```bash
+scripts/run.sh zs2 02-ztgw output          # endpoint_service_name, account_group_id, AZs
+cp stacks/03-account-greenfield/env/example.tfvars stacks/03-account-greenfield/env/zs2.tfvars
+$EDITOR stacks/03-account-greenfield/env/zs2.tfvars   # account, Phase 2 outputs, VPC CIDR
+scripts/run.sh zs2 03-account-greenfield apply
+```
+
+AWS credentials: `AWS_PROFILE` in `config/zs2.env`, either for the customer
+account itself (direct) or for a central account plus `aws_assume_role_arn`
+(assume role). The provider refuses any account other than
+`aws_account_id`. For an existing VPC use `03-account-brownfield`; its
+`destroy` restores the original default routes. Details:
+[docs/phase3-account.md](docs/phase3-account.md).
+
 ## `scripts/run.sh`
 
 ```
@@ -86,6 +107,8 @@ scripts/run.sh <env> <stack> <action> [extra terraform args]
   ZS2 and ZS3 keep separate local state in the same checkout.
 - In Legacy mode, only the credentials for the products the stack uses
   (`zia`, `ztc`) are required.
+- `destroy` of `03-account-brownfield` first restores the original default
+  routes and releases them from state, so they survive the destroy.
 - `destroy` is followed by activation (ZIA via `stacks/zia-activate`, Cloud &
   Branch Connector via the gateway client) so the deletions take effect.
 - `AUTO_APPROVE=1` for unattended runs.
@@ -100,7 +123,8 @@ make qa          # or: scripts/qa.sh
 ```
 
 runs every offline validation path: `fmt`, `validate`, `tflint`,
-`terraform test` with mocked providers, validation of every
+`terraform test` with mocked providers, a check that the Phase 3 stacks'
+shared files match, validation of every
 `example.tfvars`, Python unit tests for the gateway client, `shellcheck`,
 wrapper behaviour tests and a `checkov` security scan. CI runs the same steps on Terraform 1.7, 1.9 and latest. The
 live-tenant integration runbook is in [docs/qa.md](docs/qa.md).
@@ -112,6 +136,12 @@ config/example.env            credential template (copy to config/<env>.env)
 modules/zia-url-policy/       Phase 1 module + unit tests
 stacks/01-zia-url-policy/     Phase 1 root module (env/<env>.tfvars, tests/)
 stacks/02-ztgw/               Phase 2 root module (env/<env>.tfvars, tests/)
+stacks/03-account-greenfield/ Phase 3: onboarding + new VPC
+stacks/03-account-brownfield/ Phase 3: onboarding + existing VPC (route takeover)
+modules/ztgw-account-onboarding/  WDS registration, discovery role, group membership
+modules/aws-wds-role/         discovery role (Zscaler template v1.0.1 as Terraform)
+modules/ztgw-vpc-greenfield/  VPC, per-AZ subnets and route tables
+modules/ztgw-gwlb-endpoints/  one GWLB endpoint per AZ
 stacks/zia-activate/          utility stack: activate pending ZIA changes
 scripts/ztgw/ztgw.py          Zero Trust Gateway API client (OneAPI + Legacy)
 scripts/run.sh                per-env runner (auth switch, workspaces)

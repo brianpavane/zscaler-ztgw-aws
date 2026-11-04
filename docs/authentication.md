@@ -58,8 +58,21 @@ stacks that use the `zia` provider, and `ZTC_*` for stacks that use `ztc`
 - Credentials are passed to Terraform only through the environment, never as
   arguments. Phase 1 state contains no secrets.
 
-## AWS (Phase 2+)
+## AWS (Phase 3)
 
 Use the standard AWS SDK chain. Set `AWS_PROFILE` (SSO or assume-role
 profile recommended) in the env file; static keys are not accepted by the
 env-file parser on purpose.
+
+Phase 3 supports two modes, chosen in the stack's tfvars:
+
+| Mode | tfvars | `AWS_PROFILE` is for |
+|---|---|---|
+| Direct | `aws_account_id` | the customer account |
+| Assume role | `aws_account_id`, `aws_assume_role_arn` (+ `aws_assume_role_external_id`) | a central account allowed to assume that role |
+
+In both modes the provider's `allowed_account_ids` is `[aws_account_id]`, so
+credentials for any other account fail the run before anything changes.
+
+The Zscaler API client also needs Partner Integrations (public cloud
+accounts, account groups, discovery service) permissions for Phase 3.
