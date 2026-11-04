@@ -16,7 +16,7 @@ run against a test tenant on a Zscaler production cloud before a release.
 | `examples` | zia stacks: `terraform plan` with the real provider, credential validation skipped, scrubbed env. ztc stacks: `terraform test -test-directory=tests/example -var-file=env/example.tfvars` (mocked) | Each `env/example.tfvars` matches the stack's variables and passes validation |
 | `python` | `py_compile` + `unittest` (`tests/python`) | Client: OneAPI/Legacy URLs and auth, key obfuscation, token reuse, 401 re-auth, 429/5xx retry (never re-sending a POST), spec validation, create payload, idempotent create/adopt (including after a failed POST), region checks, health timeout, update diffing, delete + location cleanup, WDS settings, account register (generated or shared external ID, slow create, conflicts, duplicates), permission verification (HTTP 200 + `Denied` is a failure), account-group add/remove, external-data output, CLI exit codes, no secrets in output |
 | `shell` | shellcheck | Shell scripts are free of common bugs |
-| `wrapper` | `tests/scripts/test_run.sh` (stub terraform + python) | `run.sh`: OneAPI/Legacy switching, product-aware legacy credentials (zia/ztc), stale-credential scrubbing, env-file parsing and permissions, name validation, workspaces, var-files, auto-approve, destroy-time activation (ZIA and ZTC), brownfield destroy (restore → release → destroy, abort on failed restore), no secrets on argv |
+| `wrapper` | `tests/scripts/test_run.sh`, `tests/scripts/test_deploy.sh` (stub terraform + python) | `deploy.sh`: config validation, phase order for up/down/plan, preflight, wiring files and their precedence, per-instance workspaces, typed confirmation, brownfield restore during down, status. `run.sh`: OneAPI/Legacy switching, product-aware legacy credentials (zia/ztc), stale-credential scrubbing, env-file parsing (quoted values, inline comments) and permissions, instances, name validation, workspaces, var-files, auto-approve, destroy-time activation (ZIA and ZTC), brownfield destroy (restore → release → destroy, abort on failed restore), no secrets on argv |
 | `checkov` | checkov | Static security checks (Terraform, GitHub Actions, committed secrets) |
 
 `QA_STRICT=1` (set in CI) makes a missing optional tool (tflint, checkov) a
@@ -105,6 +105,9 @@ mode (direct and assume role).
 | G8 | Re-apply Phase 2 | Group still contains the account |
 | G9 | `destroy` | Account leaves group, registration and role deleted, VPC gone, no pending activation |
 | G10 | Repeat with `discovery_external_id` set | Registration uses the shared ID; role trust uses it |
+| G11 | `enable_event_forwarding = true`, `apply` | Rule + target per discovery region pointing at the bus shown on the account in the portal; tagging an instance updates the account's last sync / discovered tags promptly |
+| G12 | `scripts/deploy.sh <env> up` from scratch with two workloads | Gateway, wiring files, policy attached, both accounts onboarded; `status` lists all; re-run shows no changes |
+| G13 | `scripts/deploy.sh <env> down` | Reverse order; brownfield routes restored; wiring files removed |
 
 ### Brownfield
 

@@ -7,6 +7,18 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `scripts/deploy.sh <env> plan|up|down|status|wire`: whole-environment
+  orchestration in phase order, driven by `config/<env>.deploy`. Gateway
+  outputs are wired into Phases 1 and 3 automatically through generated
+  `env/<env>.wiring.tfvars.json` files, and the operator's tfvars take
+  precedence. Make targets: `plan`, `up`, `down`, `status` (`ENV=<env>`).
+- `run.sh`: `<stack>@<instance>` (one workspace and tfvars per AWS account)
+  and a `status` action.
+- Optional WDS event forwarding (`enable_event_forwarding`,
+  `modules/aws-wds-event-forwarding`): an EventBridge rule per discovery
+  region targeting the account's Zscaler event bus (read from the
+  registration), with a PutEvents-only role. The event pattern is
+  provisional until Zscaler's pattern is confirmed.
 - Phase 3: `stacks/03-account-greenfield` (new VPC) and
   `stacks/03-account-brownfield` (existing VPC). Both onboard the account to
   Workload Discovery (registration, discovery role, verification, account
@@ -36,6 +48,8 @@ All notable changes to this project are documented here. The format follows
   product-aware wrapper tests.
 
 ### Changed
+- Phase 3 example tfvars no longer set the gateway values (they come from
+  wiring), so a copied example cannot override them with placeholders.
 - Documentation: supported clouds are all Zscaler production clouds
   (`zscaler`, `zscalerone`, `zscalertwo`, `zscalerthree`, `zscloud`), not
   only ZS2/ZS3. The code already accepted them; tests now cover each one.
@@ -46,6 +60,8 @@ All notable changes to this project are documented here. The format follows
   uses. `destroy` of a ztc stack activates Cloud & Branch Connector changes.
 
 ### Fixed
+- Env-file parser: a quoted value followed by an inline comment kept its
+  quotes (e.g. `KEY="value"  # note`).
 - `ztgw.py` re-sent a POST after a 5xx. A create that succeeded slowly could
   then be duplicated. POSTs are no longer retried on 5xx, and the gateway and
   account creates confirm by lookup.

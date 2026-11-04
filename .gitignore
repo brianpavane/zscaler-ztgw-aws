@@ -20,6 +20,8 @@ terraform.rc
 !**/env/example.tfvars
 config/*.env
 !config/example.env
+config/*.deploy
+!config/example.deploy
 
 # Local tooling / OS
 .venv/

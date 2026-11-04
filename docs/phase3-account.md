@@ -24,6 +24,7 @@ itself never changes when accounts are added or removed.
 | 3. Discovery role trusting Zscaler's role with that external ID | `aws_iam_role` + inline policy `TagDiscovery` | customer account |
 | 4. Zscaler verifies the role. Every check must be `Allowed`; retried while IAM propagates. | `ztgw.py wds-verify` | Zscaler |
 | 5. Add the account to the gateway's account group, and activate | `ztgw.py group-add` | Zscaler |
+| 6. Optional: EventBridge forwarding to Zscaler's event bus | `aws_cloudwatch_event_rule` per region | customer account |
 
 On destroy, the account leaves the group, the role is deleted, the
 registration is removed, and the changes are activated.
@@ -41,11 +42,38 @@ template *"Zscaler Tag discovery service for VPC, Subnet, EC2 and ENI version
   `DescribeInstances`, `DescribeNetworkInterfaces`,
   `DescribeIamInstanceProfileAssociations` and `DescribeVpcEndpoints`.
 
-**No EventBridge resources are created.** Zscaler's template (v1.0.1) creates
-only the IAM role, and the onboarding API takes no event-bus configuration
-from the customer. `eventBusName` is a Zscaler-side attribute of the account.
-If Zscaler later publishes an event-forwarding template, it will be added
-here.
+### Event forwarding (EventBridge, optional)
+
+Each registered account has an **Event Bus Name** in Zscaler (Partner
+Integrations, then AWS, then the account), returned by the API as
+`accountDetails.eventBusName`:
+
+```
+arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-<org-id>-<cloud>
+```
+
+That is a Zscaler-owned bus per org and cloud, in each region. With
+`enable_event_forwarding = true`, `modules/aws-wds-event-forwarding` creates
+in the customer account:
+
+- **Per discovery region:** an EventBridge rule on the default bus, matching
+  `event_forwarding_pattern`, and a target that is Zscaler's bus in the same
+  region (`<REGION>` replaced). AWS provider v6 places each rule in its region
+  from one stack.
+- **One IAM role** that EventBridge assumes. It may only `events:PutEvents` to
+  those buses, and only this account's rules may use it
+  (`aws:SourceAccount`).
+
+The bus ARN is read from the account registration. Set
+`event_bus_arn_template` to supply it yourself.
+
+**The event pattern is provisional.** The default forwards EC2 instance state
+changes and tag changes (`aws.ec2` / `aws.tag`). Zscaler's discovery-role
+template (v1.0.1) creates only the IAM role, and Zscaler's expected pattern is
+being confirmed. Forwarding is therefore **off by default**: the discovery
+role alone is enough for onboarding, and forwarding only speeds up how
+quickly Zscaler sees changes. Override the pattern with
+`event_forwarding_pattern` (a JSON string).
 
 ### Why the client registers the account, not `ztc_public_cloud_info`
 
@@ -157,20 +185,23 @@ Shared by both stacks:
 
 | Variable | Default | Description |
 |---|---|---|
-| `region` | `us-west-2` | Must be the gateway's region |
+| `region` | gateway (wiring) | Must be the gateway's region |
 | `aws_account_id` | - | Customer account (12 digits) |
 | `aws_assume_role_arn` | `null` | Assume-role mode when set |
 | `aws_assume_role_external_id` | `null` | If the role's trust policy requires one |
-| `endpoint_service_name` | - | Phase 2 output |
-| `availability_zone_ids` | `usw2-az1..3` | Subset of the gateway's AZs |
-| `ztgw_account_group_id` | `null` | Phase 2 output `account_group_id`; checked at plan time |
+| `endpoint_service_name` | gateway (wiring) | Phase 2 output |
+| `availability_zone_ids` | gateway (wiring) | Subset of the gateway's AZs |
+| `ztgw_account_group_id` | gateway (wiring) | Phase 2 output `account_group_id`; checked at plan time |
 | `enable_wds` | `true` | Onboarding on/off |
 | `account_name` | `aws-<account id>` | Name in Partner Integrations |
 | `discovery_role_name` | `ZscalerTagDiscoveryRole` | Role created in the account |
 | `discovery_external_id` | `null` | Shared external ID (see above) |
 | `zscaler_trusted_role_arn` | `null` | Skip the tenant lookup |
-| `discovery_regions` | `[region]` | Regions WDS scans |
-| `name` | `ztgw-<env>-<region>-wl` | Name prefix for AWS resources |
+| `discovery_regions` | `[region]` | Regions WDS scans (and forwards events from) |
+| `enable_event_forwarding` | `false` | EventBridge forwarding to Zscaler's bus |
+| `event_forwarding_pattern` | provisional | JSON event pattern to forward |
+| `event_bus_arn_template` | from Zscaler | Bus ARN with `<REGION>` placeholder |
+| `name` | `ztgw-<workspace>-<region>-wl` | Name prefix for AWS resources |
 | `tags` | `{}` | Extra tags (default tags include `ManagedBy`, `Project`, `Environment`) |
 
 Greenfield: `vpc_cidr` (`10.0.0.0/16`), `private_subnet_newbits` (`8`).
@@ -178,16 +209,25 @@ Greenfield: `vpc_cidr` (`10.0.0.0/16`), `private_subnet_newbits` (`8`).
 Brownfield: `vpc_id`, `route_table_ids`, `endpoint_subnet_cidrs` or
 `endpoint_subnet_ids`, `cutover` (`true`).
 
-## Connecting the phases
+## Several accounts, one gateway
+
+Each account is an **instance** of a Phase 3 stack, with its own state and
+tfvars:
 
 ```bash
-scripts/run.sh zs2 02-ztgw output
-#   endpoint_service_name, availability_zone_ids, account_group_id
-cp stacks/03-account-greenfield/env/example.tfvars stacks/03-account-greenfield/env/zs2.tfvars
-$EDITOR stacks/03-account-greenfield/env/zs2.tfvars
-scripts/run.sh zs2 03-account-greenfield plan
-scripts/run.sh zs2 03-account-greenfield apply
+# config/zs2.deploy
+WORKLOADS="03-account-greenfield@app1 03-account-brownfield@core"
+
+# stacks/03-account-greenfield/env/zs2-app1.tfvars
+# stacks/03-account-brownfield/env/zs2-core.tfvars
+scripts/deploy.sh zs2 up                              # all of them
+scripts/run.sh zs2 03-account-greenfield@app1 plan    # or one at a time
 ```
+
+The gateway values (`region`, `endpoint_service_name`,
+`availability_zone_ids`, `ztgw_account_group_id`) come from
+`env/<env>.wiring.tfvars.json`, written by `deploy.sh` from the Phase 2
+outputs. See [deployment.md](deployment.md).
 
 Phase 2's account group ignores membership changes after creation, so
 re-applying Phase 2 never removes accounts that Phase 3 added.
@@ -195,7 +235,7 @@ re-applying Phase 2 never removes accounts that Phase 3 added.
 ## Outputs
 
 Both stacks: `aws_account_id`, `public_cloud_account_id`,
-`discovery_role_arn`.
+`discovery_role_arn`, `event_forwarding_rule_arns`.
 
 Greenfield: `vpc_id`, `private_subnet_ids`, `private_route_table_ids`,
 `endpoint_ids`.

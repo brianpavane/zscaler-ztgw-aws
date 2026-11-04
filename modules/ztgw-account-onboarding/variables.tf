@@ -72,6 +72,24 @@ variable "account_group_id" {
   }
 }
 
+variable "enable_event_forwarding" {
+  description = "Forward discovery events to Zscaler's event bus (EventBridge rule per discovery region). Optional; the discovery role alone is enough for onboarding."
+  type        = bool
+  default     = false
+}
+
+variable "event_bus_arn_template" {
+  description = "Zscaler event bus ARN with a <REGION> placeholder. null = read from the account's registration (Event Bus Name)."
+  type        = string
+  default     = null
+}
+
+variable "event_pattern" {
+  description = "EventBridge event pattern (JSON) to forward. null = the module's provisional default (EC2 state changes + tag changes)."
+  type        = string
+  default     = null
+}
+
 variable "verify_timeout_seconds" {
   description = "How long to retry Zscaler's verification of the discovery role while IAM propagates."
   type        = number

@@ -1,0 +1,21 @@
+# -----------------------------------------------------------------------------
+# What scripts/deploy.sh deploys for one environment.
+#
+#   cp config/example.deploy config/zs2.deploy
+#   scripts/deploy.sh zs2 up
+#
+# The file name (without .deploy) is the env name: the same as
+# config/<env>.env (credentials). Each selected stack needs its tfvars file.
+# Parsed, not sourced. No secrets belong here.
+# -----------------------------------------------------------------------------
+
+# Phase 1: ZIA URL filtering policy      stacks/01-zia-url-policy/env/<env>.tfvars
+URL_POLICY=true
+
+# Phase 2: Zero Trust Gateway            stacks/02-ztgw/env/<env>.tfvars
+GATEWAY=true
+
+# Phase 3: one entry per AWS account, <stack>@<instance>
+#   03-account-greenfield@<name>   new VPC        env/<env>-<name>.tfvars
+#   03-account-brownfield@<name>   existing VPC   env/<env>-<name>.tfvars
+WORKLOADS="03-account-greenfield@app1"

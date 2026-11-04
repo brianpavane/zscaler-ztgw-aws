@@ -19,9 +19,11 @@ blocked_urls = [
 # BLOCK: unmatched traffic from the scoped locations is blocked.
 default_action = "BLOCK"
 
-# Leave empty on the first run to stage the policy (rules DISABLED).
-# After Phase 2, set this to the ZT Gateway location name and re-apply.
-location_names = []
-location_ids   = []
+# Scope. With scripts/deploy.sh, leave location_names unset: the gateway's
+# location is supplied automatically (env/<env>.wiring.tfvars.json).
+# Without the gateway location the policy is staged (rules DISABLED).
+# Set these only to override or add locations.
+# location_names = ["ztgw-zs2-us-west-2-loc"]
+location_ids = []
 
 rule_order_start = 1

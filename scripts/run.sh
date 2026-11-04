@@ -2,13 +2,21 @@
 #
 # run.sh - run a stack of this repo against one tenant/environment.
 #
-#   scripts/run.sh <env> <stack> <action> [extra terraform args...]
+#   scripts/run.sh <env> <stack>[@<instance>] <action> [extra terraform args...]
 #
 #   env     name of config/<env>.env (any name, e.g. zs2 or prod). Also used as the
 #           Terraform workspace (local state per env) and the tfvars file
 #           stacks/<stack>/env/<env>.tfvars.
 #   stack   directory under stacks/ (e.g. 01-zia-url-policy, zia-activate)
-#   action  init | validate | plan | apply | destroy | output | show | auth-check
+#   @instance  optional, for stacks deployed more than once per env (one
+#           per AWS account, e.g. 03-account-greenfield@app1): workspace
+#           <env>-<instance>, tfvars env/<env>-<instance>.tfvars
+#   action  init | validate | plan | apply | destroy | output | show |
+#           status | auth-check
+#
+# If stacks/<stack>/env/<env>.wiring.tfvars.json exists (written by
+# scripts/deploy.sh from the gateway's outputs), it is loaded before the
+# tfvars file, so values set in tfvars take precedence.
 #
 # Environment:
 #   AUTO_APPROVE=1    pass -auto-approve to apply/destroy (CI / unattended)
@@ -39,14 +47,24 @@ usage() {
 case "${1:-}" in -h|--help) usage 0 ;; esac
 [ $# -ge 3 ] || usage 1
 
-ENV_NAME="$1"; STACK="$2"; ACTION="$3"; shift 3
+ENV_NAME="$1"; STACK_ARG="$2"; ACTION="$3"; shift 3
+
+STACK="${STACK_ARG%%@*}"
+INSTANCE=""
+case "$STACK_ARG" in *@*) INSTANCE="${STACK_ARG#*@}" ;; esac
 
 valid_name "$ENV_NAME" || die "invalid env name '${ENV_NAME}' (letters, digits, '-', '_')"
 valid_name "$STACK"    || die "invalid stack name '${STACK}'"
+if [ -n "$INSTANCE" ] || [ "$STACK_ARG" != "$STACK" ]; then
+    valid_name "$INSTANCE" || die "invalid instance name '${INSTANCE}' (letters, digits, '-', '_')"
+fi
 
+# One workspace (state) and one tfvars file per env, or per env + instance.
+WORKSPACE="${ENV_NAME}${INSTANCE:+-${INSTANCE}}"
 STACK_DIR="${REPO_ROOT}/stacks/${STACK}"
 ENV_FILE="${REPO_ROOT}/config/${ENV_NAME}.env"
-TFVARS="${STACK_DIR}/env/${ENV_NAME}.tfvars"
+TFVARS="${STACK_DIR}/env/${WORKSPACE}.tfvars"
+WIRING="${STACK_DIR}/env/${ENV_NAME}.wiring.tfvars.json"
 
 [ -d "$STACK_DIR" ] || die "unknown stack '${STACK}' (no ${STACK_DIR})"
 
@@ -63,7 +81,7 @@ tf() { "$TF" -chdir="$STACK_DIR" "$@"; }
 
 tf_init() {
     tf init -input=false >&2
-    tf workspace select -or-create=true "$ENV_NAME" >&2
+    tf workspace select -or-create=true "$WORKSPACE" >&2
 }
 
 # Build the optional terraform arguments in ARGS. Done in the current shell
@@ -73,6 +91,8 @@ add_var_file() {
     # Stacks that take no variables (e.g. zia-activate) have no env/ directory.
     if [ -d "${STACK_DIR}/env" ]; then
         [ -f "$TFVARS" ] || die "missing ${TFVARS} (copy env/example.tfvars)"
+        # Generated values from the gateway first; the operator's tfvars win.
+        if [ -f "$WIRING" ]; then ARGS+=("-var-file=${WIRING}"); fi
         ARGS+=("-var-file=${TFVARS}")
     fi
 }
@@ -80,7 +100,7 @@ add_auto_approve() {
     if [ "${AUTO_APPROVE:-0}" = "1" ]; then ARGS+=("-auto-approve"); fi
 }
 
-info "env=${ENV_NAME} stack=${STACK} action=${ACTION} auth=${ZSCALER_AUTH_MODE} products=${PRODUCTS:-none}"
+info "env=${ENV_NAME} stack=${STACK_ARG} workspace=${WORKSPACE} action=${ACTION} auth=${ZSCALER_AUTH_MODE} products=${PRODUCTS:-none}"
 
 case "$ACTION" in
     auth-check)
@@ -134,6 +154,11 @@ case "$ACTION" in
             info "activating Cloud & Branch Connector deletions"
             "$PYTHON" -I "${REPO_ROOT}/scripts/ztgw/ztgw.py" activate
         fi
+        ;;
+    status)
+        tf_init
+        n="$(tf state list 2>/dev/null | grep -c . || true)"
+        printf '%s\t%s\t%s\n' "$STACK_ARG" "$WORKSPACE" "$n"
         ;;
     output)
         tf_init

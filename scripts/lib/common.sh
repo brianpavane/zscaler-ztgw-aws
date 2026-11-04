@@ -50,6 +50,21 @@ file_mode() {
 
 # load_env_file FILE
 #   Parses KEY=VALUE lines (no sourcing, no expansion) and exports each key.
+# parse_value RAW - the value part of a KEY=VALUE line:
+#   "quoted"  or 'quoted'   -> contents (may contain '#'), then an optional
+#                              trailing "# comment"
+#   unquoted                -> up to an inline " # comment", trimmed
+parse_value() {
+    local v="$1"
+    if [[ "$v" =~ ^\"([^\"]*)\"[[:space:]]*(#.*)?$ ]] || [[ "$v" =~ ^\'([^\']*)\'[[:space:]]*(#.*)?$ ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+    case "$v" in \"*|\'*) return 1 ;; esac
+    v="${v%%[[:space:]]#*}"
+    printf '%s' "${v%"${v##*[![:space:]]}"}"
+}
+
 load_env_file() {
     local file="$1" line key value lineno=0 mode
 
@@ -69,11 +84,7 @@ load_env_file() {
         key="${BASH_REMATCH[1]}"
         value="${BASH_REMATCH[2]}"
         # strip an inline comment only when the value is unquoted
-        case "$value" in
-            \"*\") value="${value#\"}"; value="${value%\"}" ;;
-            \'*\') value="${value#\'}"; value="${value%\'}" ;;
-            *) value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}" ;;
-        esac
+        value="$(parse_value "$value")" || die "${file}:${lineno}: unterminated quote"
         in_list "$key" "$ALLOWED_ENV_KEYS" || die "${file}:${lineno}: unknown key '${key}'"
         export "${key}=${value}"
     done < "$file"
@@ -137,6 +148,36 @@ configure_zscaler_auth() {
 # stack_uses_provider DIR NAME - true if any .tf in DIR declares provider NAME.
 stack_uses_provider() {
     grep -Eqs "^[[:space:]]*provider[[:space:]]+\"$2\"" "$1"/*.tf
+}
+
+# load_deploy_file FILE - parse config/<env>.deploy (scripts/deploy.sh) into
+# URL_POLICY, GATEWAY (true|false) and WORKLOADS (space-separated
+# <stack>[@<instance>]). Parsed, not sourced; unknown keys are rejected. It
+# holds no secrets, so no file-mode check.
+DEPLOY_KEYS="URL_POLICY GATEWAY WORKLOADS"
+load_deploy_file() {
+    local file="$1" line key value lineno=0
+
+    [ -f "$file" ] || die "missing ${file} (copy config/example.deploy)"
+    # Set for the caller (scripts/deploy.sh).
+    # shellcheck disable=SC2034
+    URL_POLICY=false GATEWAY=false WORKLOADS=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "$line" in ''|'#'*) continue ;; esac
+        [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] || die "${file}:${lineno}: expected KEY=VALUE"
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+        value="$(parse_value "$value")" || die "${file}:${lineno}: unterminated quote"
+        in_list "$key" "$DEPLOY_KEYS" || die "${file}:${lineno}: unknown key '${key}' (valid: ${DEPLOY_KEYS})"
+        case "$key" in
+            URL_POLICY|GATEWAY)
+                case "$value" in true|false) ;; *) die "${file}:${lineno}: ${key} must be true or false" ;; esac ;;
+        esac
+        printf -v "$key" '%s' "$value"
+    done < "$file"
+    return 0
 }
 
 # stack_manages_routes DIR - true for stacks that take over existing routes

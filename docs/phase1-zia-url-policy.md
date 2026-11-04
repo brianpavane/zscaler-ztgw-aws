@@ -43,7 +43,8 @@ trimmed and lower-cased.
 
 1. **Stage.** Apply with `location_names = []`. Categories and rules are
    created **DISABLED**, and the plan warns that the policy is staged.
-2. **Attach.** After Phase 2, set `location_names` to the gateway's location
+2. **Attach.** With `scripts/deploy.sh` this is automatic: the gateway's
+   location is supplied by the wiring file. By hand, after Phase 2, set `location_names` to the gateway's location
    (`scripts/run.sh <env> 02-ztgw output location_name`, for example
    `["ztgw-zs2-us-west-2-loc"]`) and apply. The rules become ENABLED, scoped only to
    that location, and activation runs.

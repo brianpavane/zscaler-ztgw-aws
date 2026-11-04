@@ -72,6 +72,7 @@ class FakeApi:
                                "cloudType": "AWS"}]
         self.account_create_times_out = False
         self.account_deletes = 0
+        self.account_posts = []
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, dict(headers), body))
@@ -149,7 +150,10 @@ class FakeApi:
             return 200, {}, json.dumps(list(self.accounts.values())).encode()
         if tail == "/publicCloudInfo" and method == "POST":
             req = json.loads(body)
+            self.account_posts.append(json.loads(body))  # exactly what was sent
             self.next_id += 1
+            req["accountDetails"]["eventBusName"] = (
+                "arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net")
             self.accounts[self.next_id] = {**req, "id": self.next_id}
             if self.account_create_times_out:
                 return 504, {}, b"gateway timeout"
@@ -611,8 +615,8 @@ class AccountTest(unittest.TestCase):
         self.c = make_client(ONEAPI_ENV, self.api)
 
     def test_register_generates_external_id(self):
-        acct = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
-        stored = self.api.accounts[acct["id"]]
+        ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
+        stored = self.api.account_posts[-1]
         self.assertEqual(stored["externalId"], "gen-111122223333")
         self.assertEqual(stored["accountDetails"],
                          {"awsAccountId": "111122223333", "awsRoleName": "ZscalerTagDiscoveryRole",
@@ -653,12 +657,15 @@ class AccountTest(unittest.TestCase):
                 ztgw.cmd_account_register(self.c, {**ACCOUNT_SPEC, **bad})
 
     def test_read_and_delete(self):
-        self.assertEqual(ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})["exists"],
-                         "false")
+        missing = ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})
+        self.assertEqual(missing["exists"], "false")
+        self.assertEqual(missing["event_bus_name"], "")
         acct = ztgw.cmd_account_register(self.c, dict(ACCOUNT_SPEC))
         out = ztgw.cmd_account_read(self.c, {"aws_account_id": "111122223333"})
         self.assertEqual(out, {"exists": "true", "id": str(acct["id"]),
-                               "external_id": "gen-111122223333", "name": "aws-111122223333"})
+                               "external_id": "gen-111122223333", "name": "aws-111122223333",
+                               "event_bus_name": "arn:aws:events:<REGION>:175726779870:"
+                                                 "event-bus/zscaler-bus-1000-zscalertwo.net"})
         ztgw.cmd_account_delete(self.c, {"aws_account_id": "111122223333"})
         self.assertEqual(self.api.accounts, {})
         self.assertEqual(self.api.activations, 1)

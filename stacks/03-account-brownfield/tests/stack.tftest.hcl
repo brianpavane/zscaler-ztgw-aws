@@ -14,6 +14,9 @@ mock_provider "aws" {
   mock_resource "aws_vpc_endpoint" {
     defaults = { id = "vpce-0123456789abcdef0" }
   }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
   }
@@ -34,7 +37,7 @@ override_data {
 }
 override_data {
   target = module.onboarding[0].data.external.account
-  values = { result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333" } }
+  values = { result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333", event_bus_name = "arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net" } }
 }
 override_data {
   target = data.aws_route_table.private["usw2-az1"]

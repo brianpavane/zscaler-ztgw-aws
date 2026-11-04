@@ -19,7 +19,8 @@
 #                validation skipped (no tenant needed)
 #   python     unit tests for scripts/ztgw/ztgw.py (python3 -I, stdlib only)
 #   shell      shellcheck on every shell script
-#   wrapper    tests/scripts/test_run.sh (run.sh behaviour, stub terraform)
+#   wrapper    tests/scripts/test_run.sh + test_deploy.sh (run.sh and deploy.sh
+#              behaviour, stub terraform)
 #   checkov    checkov static security scan (.checkov.yaml)
 #
 # Tools are looked up on PATH; override with TERRAFORM_BIN, TFLINT_BIN,
@@ -234,7 +235,11 @@ step_shell() {
 
 step_wrapper() {
     say "wrapper tests"
-    if bash tests/scripts/test_run.sh; then record wrapper PASS; else record wrapper FAIL; fi
+    if bash tests/scripts/test_run.sh && bash tests/scripts/test_deploy.sh; then
+        record wrapper PASS
+    else
+        record wrapper FAIL
+    fi
 }
 
 step_checkov() {

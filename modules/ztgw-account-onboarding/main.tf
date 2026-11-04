@@ -12,6 +12,8 @@
 #     Retries while IAM propagates.
 #  5. Add the account to the gateway's account group so it may connect
 #     endpoints to the Zero Trust Gateway. Removed again on destroy.
+#  6. Optional (enable_event_forwarding): EventBridge rules forwarding
+#     discovery events to Zscaler's per-org event bus in each region.
 #
 # Registration uses the client rather than ztc_public_cloud_info because the
 # provider cannot pass an external ID and its create call can outlast the
@@ -95,6 +97,18 @@ resource "terraform_data" "verify" {
       })
     }
   }
+}
+
+module "event_forwarding" {
+  source = "../aws-wds-event-forwarding"
+  count  = var.enable_event_forwarding ? 1 : 0
+
+  name                   = "${var.role_name}-forwarding"
+  aws_account_id         = var.aws_account_id
+  regions                = var.discovery_regions
+  event_bus_arn_template = var.event_bus_arn_template != null ? var.event_bus_arn_template : data.external.account.result.event_bus_name
+  event_pattern          = var.event_pattern # null = module's provisional default
+  tags                   = var.tags
 }
 
 resource "terraform_data" "group_membership" {

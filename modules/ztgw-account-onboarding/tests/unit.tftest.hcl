@@ -2,7 +2,14 @@
 # Provisioners run for real in terraform test, so python = "true" makes the
 # client calls no-ops; the external data sources are overridden.
 
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock" }
+  }
+  mock_data "aws_iam_policy_document" {
+    defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
+  }
+}
 mock_provider "external" {}
 
 override_data {
@@ -19,7 +26,7 @@ override_data {
 override_data {
   target = data.external.account
   values = {
-    result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "workload-111122223333" }
+    result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "workload-111122223333", event_bus_name = "arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net" }
   }
 }
 
@@ -84,6 +91,26 @@ run "no_group" {
   assert {
     condition     = length(terraform_data.group_membership) == 0
     error_message = "no group membership when account_group_id is null"
+  }
+}
+
+run "event_forwarding_off_by_default" {
+  command = apply
+  assert {
+    condition     = length(module.event_forwarding) == 0
+    error_message = "event forwarding must be opt-in"
+  }
+}
+
+run "event_forwarding_uses_account_bus" {
+  command = apply
+  variables {
+    enable_event_forwarding = true
+    discovery_regions       = ["us-west-2", "us-east-1"]
+  }
+  assert {
+    condition     = module.event_forwarding[0].event_bus_arns["us-east-1"] == "arn:aws:events:us-east-1:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net"
+    error_message = "forwarding must target Zscaler's bus from the account record, per region"
   }
 }
 

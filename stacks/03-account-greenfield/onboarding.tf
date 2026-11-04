@@ -23,6 +23,9 @@ module "onboarding" {
   external_id              = var.discovery_external_id
   zscaler_trusted_role_arn = var.zscaler_trusted_role_arn
   account_group_id         = try(data.ztc_account_groups.gateway[0].id, null)
+  enable_event_forwarding  = var.enable_event_forwarding
+  event_pattern            = var.event_forwarding_pattern
+  event_bus_arn_template   = var.event_bus_arn_template
   python                   = var.python
 }
 

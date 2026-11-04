@@ -87,6 +87,10 @@ not `HEALTHY` shows up as a `gateway_ready` warning.
 
 ## Connecting the phases
 
+`scripts/deploy.sh <env> up` does this automatically: after the gateway is
+applied, it writes the outputs into each later stack's
+`env/<env>.wiring.tfvars.json` (see [deployment.md](deployment.md)). By hand:
+
 ```bash
 scripts/run.sh zs2 02-ztgw apply
 scripts/run.sh zs2 02-ztgw output location_name

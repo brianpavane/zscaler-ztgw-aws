@@ -26,7 +26,7 @@
                                       │                              │
  Phase 3  stacks/03-account-*          │     customer AWS account     │
  ───────────────────────────────────  │     ──────────────────────── ▼ ────
-  WDS onboarding: discovery IAM role
+  WDS onboarding: discovery IAM role (+ optional EventBridge → Zscaler bus)
   account registration ── member of ──┘      per AZ:
   VPC (greenfield) or existing VPC              endpoint subnet + GWLB endpoint
                                                 private subnet(s) + route table
@@ -89,9 +89,13 @@ Phase 3 rather than a separate phase:
    generates its external ID.
 2. A discovery IAM role, equivalent to Zscaler's CloudFormation template
    v1.0.1, trusts Zscaler's role with that external ID. Zscaler then verifies
-   it. The template has no EventBridge part, so none is created.
+   it.
 3. The account joins the account group the gateway allows. The gateway
    itself is not modified when accounts are added.
+3a. Optional: EventBridge rules (one per discovery region) forward discovery
+   events to the account's Zscaler event bus
+   (`arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-<org>-<cloud>`).
+   The event pattern is provisional until Zscaler's is confirmed.
 4. VPC side: one endpoint subnet + GWLB endpoint per AZ, one route table per
    AZ with `0.0.0.0/0` pointing to the **same-AZ** endpoint.
 
@@ -107,6 +111,20 @@ rollback (`cutover = false`) or destroy.
 **To verify in the test tenant:** that account-group membership changes
 reach the gateway's endpoint-service allow list without a gateway update,
 and that egress needs no NAT/IGW in the customer VPC.
+
+## Orchestration
+
+`scripts/deploy.sh <env> up|down|plan|status` runs the stacks in phase
+order through `run.sh`, and wires the gateway's outputs into Phases 1 and 3
+via generated `env/<env>.wiring.tfvars.json` files (loaded before the
+operator's tfvars). Stacks stay separate on purpose:
+- One gateway serves many accounts.
+- Each account has its own state (`<stack>@<instance>`, workspace
+  `<env>-<instance>`), so changing one account never plans changes to the
+  gateway or other accounts.
+- Brownfield destroy needs its restore sequence.
+
+See [deployment.md](deployment.md).
 
 ## State and environments
 

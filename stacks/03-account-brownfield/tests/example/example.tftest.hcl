@@ -15,6 +15,9 @@ mock_provider "aws" {
   mock_resource "aws_vpc_endpoint" {
     defaults = { id = "vpce-0123456789abcdef0" }
   }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
   }
@@ -35,7 +38,7 @@ override_data {
 }
 override_data {
   target = module.onboarding[0].data.external.account
-  values = { result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333" } }
+  values = { result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333", event_bus_name = "arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net" } }
 }
 override_data {
   target = data.aws_route_table.private["usw2-az1"]
@@ -76,7 +79,12 @@ override_data {
   values = { gateway_id = "igw-0123456789abcdef0", nat_gateway_id = "", transit_gateway_id = "", network_interface_id = "", vpc_peering_connection_id = "", carrier_gateway_id = "", local_gateway_id = "", core_network_arn = "", instance_id = "", egress_only_gateway_id = "" }
 }
 
+# Values deploy.sh supplies from the gateway (wiring file).
 variables {
+  region                 = "us-west-2"
+  endpoint_service_name  = "com.amazonaws.vpce.us-west-2.vpce-svc-0123456789abcdef0"
+  availability_zone_ids  = ["usw2-az1", "usw2-az2", "usw2-az3"]
+  ztgw_account_group_id  = 500
   python                 = "true"
   import_existing_routes = false
 }

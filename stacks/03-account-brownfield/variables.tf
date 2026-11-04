@@ -76,6 +76,24 @@ variable "discovery_regions" {
   default     = null
 }
 
+variable "enable_event_forwarding" {
+  description = "Forward discovery events to Zscaler's event bus via EventBridge (one rule per discovery region). Optional."
+  type        = bool
+  default     = false
+}
+
+variable "event_forwarding_pattern" {
+  description = "EventBridge event pattern (JSON) to forward. null = provisional default (EC2 state changes + tag changes) until Zscaler's pattern is confirmed."
+  type        = string
+  default     = null
+}
+
+variable "event_bus_arn_template" {
+  description = "Zscaler event bus ARN with <REGION> placeholder. null = read from the account registration."
+  type        = string
+  default     = null
+}
+
 variable "ztgw_account_group_id" {
   description = "Phase 2 output account_group_id. The account is added to it so it may connect to the gateway. null = manage access in Phase 2 instead."
   type        = number

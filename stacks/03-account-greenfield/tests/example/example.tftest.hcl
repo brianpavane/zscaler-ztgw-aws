@@ -8,6 +8,9 @@ mock_provider "aws" {
   mock_resource "aws_subnet" {
     defaults = { id = "subnet-0123456789abcdef0" }
   }
+  mock_resource "aws_iam_role" {
+    defaults = { arn = "arn:aws:iam::111122223333:role/mock" }
+  }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}" }
   }
@@ -33,13 +36,18 @@ override_data {
 override_data {
   target = module.onboarding[0].data.external.account
   values = {
-    result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333" }
+    result = { exists = "true", id = "4242", external_id = "zs-ext-0001", name = "aws-111122223333", event_bus_name = "arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-1000-zscalertwo.net" }
   }
 }
 
 
+# Values deploy.sh supplies from the gateway (wiring file).
 variables {
-  python = "true"
+  region                = "us-west-2"
+  endpoint_service_name = "com.amazonaws.vpce.us-west-2.vpce-svc-0123456789abcdef0"
+  availability_zone_ids = ["usw2-az1", "usw2-az2", "usw2-az3"]
+  ztgw_account_group_id = 500
+  python                = "true"
 }
 
 run "example_tfvars" {

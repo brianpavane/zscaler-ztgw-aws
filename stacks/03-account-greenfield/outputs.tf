@@ -12,6 +12,11 @@ output "public_cloud_account_id" {
   value       = try(module.onboarding[0].public_cloud_account_id, null)
 }
 
+output "event_forwarding_rule_arns" {
+  description = "Map of region to EventBridge forwarding rule ARN (empty when forwarding is off)."
+  value       = try(module.onboarding[0].event_forwarding_rule_arns, {})
+}
+
 output "discovery_role_arn" {
   description = "Zscaler discovery role in the account."
   value       = try(module.onboarding[0].discovery_role_arn, null)

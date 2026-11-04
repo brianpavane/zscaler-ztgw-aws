@@ -108,7 +108,7 @@ echo "run.sh tests"
 # 1. usage
 run_wrapper
 expect_rc 1 "no arguments prints usage and fails"
-expect_out "scripts/run.sh <env> <stack> <action>" "usage text shown"
+expect_out "scripts/run.sh <env> <stack>\[@<instance>\] <action>" "usage text shown"
 
 # 2. OneAPI mode
 write_env t1 "$ONEAPI_ENV"
@@ -257,6 +257,21 @@ expect_rc 0 "ztc stack destroy succeeds"
 expect_log "PYTHON: -I .*scripts/ztgw/ztgw.py activate" "ztc destroy runs client activation"
 expect_not_log "zia-activate" "ztc-only stack does not run ZIA activation"
 EXTRA_ENV=()
+
+# 7b. Quoted values with a trailing comment keep no quotes
+write_env t1 'ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENT_ID="cid"   # the client
+ZSCALER_CLIENT_SECRET='"'"'p#ss word'"'"'  # quoted, contains #
+ZSCALER_VANITY_DOMAIN=acme # inline'
+EXTRA_ENV=()
+run_wrapper t1 s1 plan
+expect_rc 0 "quoted values with trailing comments accepted"
+expect_log "ENV ZSCALER_CLIENT_ID=cid$" "double-quoted value + comment: quotes and comment stripped"
+expect_log "ENV ZSCALER_CLIENT_SECRET=p#ss word$" "single-quoted value keeps # and spaces"
+expect_log "ENV ZSCALER_VANITY_DOMAIN=acme$" "unquoted value: inline comment stripped"
+write_env t1 'ZSCALER_AUTH_MODE="oneapi'
+run_wrapper t1 s1 plan
+expect_rc 1 "unterminated quote rejected"
 
 # 8. Every Zscaler production cloud is accepted in Legacy mode
 for cloud in zscaler zscalerone zscalertwo zscalerthree zscloud; do

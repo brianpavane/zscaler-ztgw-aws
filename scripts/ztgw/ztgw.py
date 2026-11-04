@@ -22,7 +22,8 @@ Workload Discovery (WDS) onboarding, used by the Phase 3 stacks:
   account-register  register an AWS account in Partner Integrations
                     (idempotent: adopts an existing registration)
                                                         spec: ZTGW_ACCOUNT env
-  account-read      `external` data source: {exists, id, external_id, name}
+  account-read      `external` data source: {exists, id, external_id, name,
+                    event_bus_name}
                     for the AWS account in the stdin query {aws_account_id}
   account-delete    remove the registration (idempotent)  spec: ZTGW_ACCOUNT env
   wds-verify        ask Zscaler to verify the discovery role in the customer
@@ -707,9 +708,13 @@ def cmd_account_read(c: Client, query: Dict[str, Any]) -> Dict[str, str]:
         raise ZtgwError(f"account-read: invalid aws_account_id {aws_id!r}")
     acct = find_account(c, aws_id)
     if not acct:
-        return {"exists": "false", "id": "", "external_id": "", "name": ""}
+        return {"exists": "false", "id": "", "external_id": "", "name": "", "event_bus_name": ""}
+    details = acct.get("accountDetails") or {}
     return {"exists": "true", "id": str(acct.get("id", "")),
-            "external_id": _account_external_id(acct), "name": str(acct.get("name", ""))}
+            "external_id": _account_external_id(acct), "name": str(acct.get("name", "")),
+            # Zscaler's per-org bus, as an ARN template with a <REGION> placeholder:
+            # arn:aws:events:<REGION>:175726779870:event-bus/zscaler-bus-<org>-<cloud>
+            "event_bus_name": str(details.get("eventBusName") or "")}
 
 
 def cmd_account_delete(c: Client, spec: Dict[str, Any]) -> None:

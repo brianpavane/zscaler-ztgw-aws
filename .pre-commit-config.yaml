@@ -34,3 +34,9 @@ repos:
         language: script
         files: ^(scripts/|tests/scripts/)
         pass_filenames: false
+      - id: deploy-tests
+        name: deploy.sh tests
+        entry: tests/scripts/test_deploy.sh
+        language: script
+        files: ^(scripts/|tests/scripts/)
+        pass_filenames: false
