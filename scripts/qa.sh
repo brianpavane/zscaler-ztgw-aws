@@ -61,6 +61,19 @@ tf_dirs() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# offline CMD... - run CMD with every AWS/Zscaler credential source removed,
+# so a test that accidentally reaches a real provider fails here exactly as
+# it does in CI, instead of silently using the operator's credentials.
+offline() {
+    local v unset_args=()
+    for v in $(env | grep -oE '^(AWS|ZSCALER|ZIA|ZTC)_[A-Z0-9_]*=' | tr -d '='); do
+        unset_args+=(-u "$v")
+    done
+    env ${unset_args[@]+"${unset_args[@]}"} \
+        AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null \
+        AWS_EC2_METADATA_DISABLED=true "$@"
+}
+
 missing_tool() { # step tool
     if [ "$STRICT" = "1" ]; then
         echo "required tool '$2' not found"; record "$1" FAIL
@@ -106,7 +119,7 @@ step_test() {
         [ -d "$d/tests" ] || continue
         echo "-- $d"
         "$TF" -chdir="$d" init -backend=false -input=false >/dev/null || { rc=1; continue; }
-        "$TF" -chdir="$d" test -no-color || rc=1
+        offline "$TF" -chdir="$d" test -no-color || rc=1
     done < <(tf_dirs)
     if [ "$rc" -eq 0 ]; then record test PASS; else record test FAIL; fi
 }
@@ -130,7 +143,7 @@ step_examples() {
         if [ -d "$d/tests/example" ]; then
             ran=1
             "$TF" -chdir="$d" init -backend=false -input=false >/dev/null || { rc=1; continue; }
-            if "$TF" -chdir="$d" test -no-color -test-directory=tests/example \
+            if offline "$TF" -chdir="$d" test -no-color -test-directory=tests/example \
                     -var-file=env/example.tfvars >"$tmp/$name.test.txt" 2>&1; then
                 echo "   mocked apply OK"
             else

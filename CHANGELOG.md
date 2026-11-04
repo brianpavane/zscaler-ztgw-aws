@@ -23,7 +23,9 @@ All notable changes to this project are documented here. The format follows
 - `ztgw.py`: `wds-settings`, `account-register`, `account-read`,
   `account-delete`, `wds-verify`, `group-add`, `group-remove`.
 - QA: a `shared` step that keeps the Phase 3 stacks' common files identical,
-  plus Terraform, Python and wrapper tests for all of the above.
+  plus Terraform, Python and wrapper tests for all of the above. The
+  `terraform test` steps run with AWS and Zscaler credentials removed, so a
+  test that reaches a real provider fails locally just as it does in CI.
 - Phase 2: `stacks/02-ztgw`. Zero Trust Gateway in AWS (default `us-west-2`,
   `usw2-az1..3`, configurable), with a location template, a consumer account
   group, health polling, in-place updates, and destroy-time location cleanup.
