@@ -17,7 +17,8 @@ availability_zone_ids = ["usw2-az1", "usw2-az2", "usw2-az3"]
 create_account_group     = true
 account_group_member_ids = []
 
-# Before Phase 3, raw AWS account IDs can be allowed directly:
-additional_aws_accounts = ["123456789012"]
+# AWS account IDs allowed WITHOUT Phase 3 onboarding (normally leave empty):
+additional_aws_accounts = []
+# additional_aws_accounts = ["123456789012"]
 
 cleanup_location_on_destroy = true

@@ -42,9 +42,17 @@ domain identifies the tenant. With the Legacy API, set the cloud name above.
 See [docs/architecture.md](docs/architecture.md) for the full design and how
 the phases connect.
 
+## New here? Start with the step-by-step guide
+
+**[docs/getting-started.md](docs/getting-started.md)** covers installing the
+tools (macOS, Linux, Windows/WSL), getting Zscaler and AWS credentials,
+every configuration file with examples, and how to run, check, change and
+remove a deployment. The Quick start below is the short version for people
+who have done it before.
+
 ## Quick start: a complete environment
 
-Prerequisites: Terraform **>= 1.7**, bash (macOS 3.2 is fine), Python 3
+Prerequisites ([details](docs/getting-started.md#step-1-install-the-tools)): Terraform **>= 1.7**, bash (macOS 3.2 is fine), Python 3
 (standard library only), Zscaler API credentials (OneAPI client or Legacy
 admin + key, see [docs/authentication.md](docs/authentication.md)) and an AWS
 profile for each account.
@@ -155,7 +163,8 @@ scripts/lib/common.sh         shared shell helpers
 tests/scripts/test_run.sh     run.sh behaviour tests
 tests/scripts/test_deploy.sh  deploy.sh behaviour tests
 tests/python/test_ztgw.py     gateway client unit tests
-docs/                         architecture, authentication, phases, QA
+docs/                         getting started, deployment, architecture,
+                              authentication, phases, QA
 ```
 
 ## License

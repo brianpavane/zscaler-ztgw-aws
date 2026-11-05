@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- `docs/getting-started.md`: step-by-step install and configuration guide
+  (tools per OS, Zscaler and AWS credentials, every config file with
+  examples, run/check/change/remove, troubleshooting, cheat sheet). Commands
+  use shell variables (`ZTGW_ENV`, `ZTGW_ACCOUNT`, `ZTGW_REGION`) so they can
+  be copied as-is.
 - `scripts/deploy.sh <env> plan|up|down|status|wire`: whole-environment
   orchestration in phase order, driven by `config/<env>.deploy`. Gateway
   outputs are wired into Phases 1 and 3 automatically through generated
@@ -48,6 +53,8 @@ All notable changes to this project are documented here. The format follows
   product-aware wrapper tests.
 
 ### Changed
+- Phase 2 example tfvars no longer allows a placeholder AWS account
+  (`additional_aws_accounts = []`).
 - Phase 3 example tfvars no longer set the gateway values (they come from
   wiring), so a copied example cannot override them with placeholders.
 - Documentation: supported clouds are all Zscaler production clouds
