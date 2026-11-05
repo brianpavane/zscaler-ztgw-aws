@@ -24,7 +24,8 @@
 # destroy of a brownfield stack (03-account-brownfield) first restores the
 # original default routes, releases them from state, then destroys the rest.
 #   TERRAFORM_BIN     terraform binary to use (default: terraform, >= 1.7)
-#   PYTHON_BIN        python 3 used for scripts/ztgw/ztgw.py (default: python3)
+#   PYTHON_BIN        python 3 used for scripts/ztgw/ztgw.py (default: python3);
+#                     also passed to Terraform as TF_VAR_python
 #
 # Credentials are read from config/<env>.env and exported as the environment
 # variables the official zscaler providers read; they never appear on a
@@ -73,6 +74,9 @@ require_terraform "$TF"
 
 PRODUCTS="$(stack_products "$STACK_DIR")"
 PYTHON="${PYTHON_BIN:-python3}"
+# One knob for the interpreter: Terraform runs the client with var.python, so
+# pass PYTHON_BIN through (a `python` value in tfvars still takes precedence).
+if [ -n "${PYTHON_BIN:-}" ]; then export TF_VAR_python="$PYTHON_BIN"; fi
 
 load_env_file "$ENV_FILE"
 configure_zscaler_auth "$PRODUCTS"

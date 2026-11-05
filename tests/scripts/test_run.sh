@@ -53,7 +53,7 @@ done
 {
   printf 'ARGS:'; printf ' %s' "$@"; printf '\n'
   for v in ZSCALER_USE_LEGACY_CLIENT ZSCALER_CLIENT_ID ZSCALER_CLIENT_SECRET ZSCALER_VANITY_DOMAIN \
-           ZSCALER_CLOUD ZIA_USERNAME ZIA_PASSWORD ZIA_API_KEY ZIA_CLOUD AWS_PROFILE; do
+           ZSCALER_CLOUD ZIA_USERNAME ZIA_PASSWORD ZIA_API_KEY ZIA_CLOUD AWS_PROFILE TF_VAR_python; do
     if [ -n "${!v+x}" ]; then printf 'ENV %s=%s\n' "$v" "${!v}"; fi
   done
 } >> "$STUB_LOG"
@@ -87,7 +87,7 @@ write_env() { # name content [mode]
 run_wrapper() {
     : > "$LOG"
     OUT="$(cd "$WORK" && PATH="$WORK/bin:$PATH" STUB_LOG="$LOG" \
-           env -u ZSCALER_CLIENT_ID -u ZIA_USERNAME -u AUTO_APPROVE \
+           env -u ZSCALER_CLIENT_ID -u ZIA_USERNAME -u AUTO_APPROVE -u PYTHON_BIN -u TF_VAR_python \
            "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
            bash "$WORK/repo/scripts/run.sh" "$@" 2>&1)"
     RC=$?
@@ -257,6 +257,18 @@ expect_rc 0 "ztc stack destroy succeeds"
 expect_log "PYTHON: -I .*scripts/ztgw/ztgw.py activate" "ztc destroy runs client activation"
 expect_not_log "zia-activate" "ztc-only stack does not run ZIA activation"
 EXTRA_ENV=()
+
+# 7a. PYTHON_BIN reaches Terraform (var.python) too
+write_env t1 'ZSCALER_AUTH_MODE=oneapi
+ZSCALER_CLIENT_ID=cid
+ZSCALER_CLIENT_SECRET=sec
+ZSCALER_VANITY_DOMAIN=acme'
+EXTRA_ENV=(PYTHON_BIN=/usr/bin/python3.11)
+run_wrapper t1 s1 plan
+expect_log "ENV TF_VAR_python=/usr/bin/python3.11" "PYTHON_BIN exported as TF_VAR_python"
+EXTRA_ENV=()
+run_wrapper t1 s1 plan
+expect_not_log "ENV TF_VAR_python" "TF_VAR_python not set without PYTHON_BIN"
 
 # 7b. Quoted values with a trailing comment keep no quotes
 write_env t1 'ZSCALER_AUTH_MODE=oneapi

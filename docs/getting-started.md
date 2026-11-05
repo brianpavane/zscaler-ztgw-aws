@@ -58,7 +58,7 @@ You need five things:
 |---|---|---|
 | Terraform | **1.7 or newer** | builds everything |
 | Python 3 | **3.9 or newer** | small Zscaler API client (standard library only, nothing to `pip install`) |
-| bash | any (macOS's built-in 3.2 is fine) | runs the scripts |
+| bash | any (Linux's, or macOS's built-in 3.2) | runs the scripts |
 | git | any | downloads this repository |
 | AWS CLI v2 | any | sets up your AWS login (profile) and looks up IDs |
 
@@ -85,34 +85,96 @@ You need five things:
    > brew uninstall terraform && brew install hashicorp/tap/terraform
    > ```
 
-### Linux (Ubuntu / Debian)
+### Linux
+
+First find out which Linux you have and which processor it uses:
 
 ```bash
+cat /etc/os-release | grep -E '^(NAME|VERSION_ID)='   # e.g. NAME="Ubuntu" VERSION_ID="24.04"
+uname -m                                             # x86_64 (Intel/AMD) or aarch64 (ARM, e.g. Graviton)
+```
+
+Then follow the matching section. Each one installs everything; copy the
+whole block.
+
+#### Ubuntu / Debian
+
+```bash
+# Base tools
 sudo apt-get update
-sudo apt-get install -y gnupg software-properties-common curl unzip git python3
+sudo apt-get install -y curl unzip git gnupg lsb-release python3
 
 # Terraform (HashiCorp's official package repository)
 curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
 echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
   | sudo tee /etc/apt/sources.list.d/hashicorp.list
 sudo apt-get update && sudo apt-get install -y terraform
-
-# AWS CLI v2
-curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
 ```
+
+#### RHEL / Rocky / AlmaLinux / CentOS Stream / Fedora
+
+```bash
+# Base tools
+sudo dnf install -y unzip git python3 dnf-plugins-core   # curl is already installed
+
+# Terraform (HashiCorp's official package repository)
+if grep -q '^ID=fedora' /etc/os-release; then
+  sudo dnf config-manager addrepo --from-repofile=https://rpm.releases.hashicorp.com/fedora/hashicorp.repo \
+    || sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/fedora/hashicorp.repo
+else
+  sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+fi
+sudo dnf install -y terraform
+```
+
+#### Amazon Linux 2023
+
+```bash
+sudo dnf install -y unzip git python3 dnf-plugins-core
+sudo dnf config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo dnf install -y terraform
+```
+
+(The AWS CLI v2 is already installed on Amazon Linux 2023.)
+
+#### AWS CLI v2 (all Linux except Amazon Linux 2023)
+
+The same commands work on Intel/AMD and ARM:
+
+```bash
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o /tmp/awscliv2.zip
+unzip -q -o /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install --update
+rm -rf /tmp/awscliv2.zip /tmp/aws
+```
+
+#### If Python is older than 3.9
+
+Current Ubuntu (22.04+), Debian (11+), RHEL-family 9, Fedora and Amazon
+Linux 2023 already have a new enough Python, so skip this. RHEL / Rocky /
+Alma **8** ship Python 3.6 and need a newer Python next to the system one:
+
+```bash
+python3 --version                  # if this shows 3.8 or lower:
+sudo dnf install -y python3.11     # RHEL / Rocky / Alma 8
+echo 'export PYTHON_BIN=python3.11' >> ~/.bashrc && source ~/.bashrc
+```
+
+`PYTHON_BIN` tells the scripts and Terraform which Python to use. Leave the
+system `python3` alone, because the operating system relies on it.
 
 ### Windows
 
-Use **WSL2** (Windows Subsystem for Linux) with Ubuntu, then follow the
-Linux steps inside it. The scripts are bash scripts and don't run in
+Use **WSL2** (Windows Subsystem for Linux) with Ubuntu (in PowerShell as
+administrator: `wsl --install -d Ubuntu`), then follow the Ubuntu steps
+inside it. Clone the repository inside the Linux file system (e.g.
+`~/zscaler-ztgw-aws`), not under `/mnt/c`, so file permissions work. The scripts are bash scripts and don't run in
 PowerShell or cmd.
 
 ### ✅ Check
 
 ```bash
 terraform version     # Terraform v1.7.0 or newer
-python3 --version     # Python 3.9 or newer
+python3 --version     # Python 3.9 or newer (or: $PYTHON_BIN --version)
 bash --version        # any
 git --version         # any
 aws --version         # aws-cli/2.x
@@ -204,6 +266,10 @@ rules.
 
 ### Create the profile (AWS IAM Identity Center / SSO, recommended)
 
+The same commands work on macOS and Linux. On a Linux server with no web
+browser, `aws sso login` prints a link and a code: open the link on any
+computer and enter the code.
+
 ```bash
 aws configure sso --profile ztgw-prod
 # answer the prompts: SSO start URL, SSO region, account, role
@@ -259,7 +325,7 @@ never be committed by accident.
 ```bash
 cp config/example.env "config/$ZTGW_ENV.env"
 chmod 600 "config/$ZTGW_ENV.env"          # required: only you can read it
-open -e "config/$ZTGW_ENV.env"            # macOS; or: nano "config/$ZTGW_ENV.env"
+nano "config/$ZTGW_ENV.env"               # any editor works (vi, VS Code, ...)
 ```
 
 **Example (Option A, OneAPI).** Fill in your values and leave the Legacy
@@ -587,7 +653,9 @@ Running `up` again is safe: it changes only what's different.
 | `missing config/prod.env` / `missing .../prod.tfvars` | A file from Step 5 is missing, or has a different env name | Create it; check the spelling of `ZTGW_ENV` |
 | `unknown key 'ZSCALER_CLIENTID'` | Typo in a `.env` or `.deploy` file | Fix the key name (see the tables in Step 5) |
 | `missing required setting(s) for auth mode ...` | A required value in the `.env` file is empty | Fill it in (see 5.1) |
-| `terraform >= 1.7 required (found 1.5)` | Terraform is too old | See Step 1 (macOS: use `hashicorp/tap/terraform`) |
+| `terraform >= 1.7 required (found 1.5)` | Terraform is too old | See Step 1 (macOS: use `hashicorp/tap/terraform`; Linux: install from HashiCorp's repository, not the distribution's own package) |
+| `python3: not found`, or `ztgw.py` fails immediately with a Python error | Python is missing or older than 3.9 | See Step 1, "If Python is older than 3.9" |
+| `Permission denied` running `scripts/...` | The files lost their "executable" flag (e.g. copied, not cloned) | `chmod +x scripts/*.sh`, or run them as `bash scripts/deploy.sh ...` |
 | `AWS account ID not allowed` | The AWS profile signs in to a different account than `aws_account_id` | Check `aws sts get-caller-identity --profile ...`; fix the profile or the ID |
 | `ExpiredToken` / `SSO session expired` | AWS login expired | `aws sso login --profile ztgw-prod` |
 | `pending activation changes` | Someone else has unactivated changes in the Zscaler tenant | Activate (or discard) them in the portal, then run again |

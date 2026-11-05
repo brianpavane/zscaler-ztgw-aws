@@ -7,6 +7,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Getting-started guide: Linux install steps for Ubuntu/Debian,
+  RHEL/Rocky/Alma/Fedora and Amazon Linux 2023 (x86_64 and ARM), older
+  Python handling, WSL notes, Linux troubleshooting.
+- `run.sh`: `PYTHON_BIN` is also passed to Terraform (`TF_VAR_python`), so one
+  setting selects the Python used everywhere.
 - `docs/getting-started.md`: step-by-step install and configuration guide
   (tools per OS, Zscaler and AWS credentials, every config file with
   examples, run/check/change/remove, troubleshooting, cheat sheet). Commands
