@@ -46,10 +46,10 @@ locals {
 
   # Changing any of these updates the gateway in place.
   mutable_spec = {
-    account_group_ids       = sort(local.account_group_ids)
-    allowed_account_ids     = sort(var.allowed_account_ids)
-    additional_aws_accounts = sort(var.additional_aws_accounts)
-  }
+  account_group_ids       = [for v in sort([for x in local.account_group_ids : tostring(x)]) : tonumber(v)]
+  allowed_account_ids     = [for v in sort([for x in var.allowed_account_ids : tostring(x)]) : tonumber(v)]
+  additional_aws_accounts = sort(var.additional_aws_accounts)
+}
 
   spec = merge(local.immutable_spec, local.mutable_spec, {
     health_timeout_seconds = var.health_timeout_seconds
@@ -87,9 +87,9 @@ resource "ztc_account_groups" "consumers" {
   cloud_type  = "AWS"
 
   dynamic "public_cloud_accounts" {
-    for_each = length(var.account_group_member_ids) > 0 ? [1] : []
-    content {
-      id = var.account_group_member_ids
+  for_each = length(var.account_group_member_ids) > 0 ? [1] : []
+  content {
+    id = toset(var.account_group_member_ids)
     }
   }
 
