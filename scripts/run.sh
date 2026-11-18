@@ -63,7 +63,9 @@ fi
 # One workspace (state) and one tfvars file per env, or per env + instance.
 WORKSPACE="${ENV_NAME}${INSTANCE:+-${INSTANCE}}"
 STACK_DIR="${REPO_ROOT}/stacks/${STACK}"
-ENV_FILE="${REPO_ROOT}/config/${ENV_NAME}.env"
+#ENV_FILE="${REPO_ROOT}/config/${ENV_NAME}.env"
+ENV_FILE="${REPO_ROOT}/config/${ENV_NAME}${INSTANCE:+-${INSTANCE}}.env"
+[ -f "$ENV_FILE" ] || ENV_FILE="${REPO_ROOT}/config/${ENV_NAME}.env"
 TFVARS="${STACK_DIR}/env/${WORKSPACE}.tfvars"
 WIRING="${STACK_DIR}/env/${ENV_NAME}.wiring.tfvars.json"
 
