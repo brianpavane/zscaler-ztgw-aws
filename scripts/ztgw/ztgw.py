@@ -289,7 +289,11 @@ def _parse_json(raw: bytes) -> Any:
     try:
         return json.loads(raw)
     except ValueError:
-        return None
+        try:
+            return raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return None
+
 
 
 def _error_text(parsed: Any, raw: bytes) -> str:
@@ -529,7 +533,7 @@ def cmd_delete(c: Client, spec: Dict[str, Any]) -> None:
         loc = find_location(c, loc_name)
         if loc:
             log(f"deleting leftover location '{loc_name}' (id {loc['id']})")
-            c.request("DELETE", f"/location/{int(loc['id'])}", ok_statuses=(200, 204, 404))
+            c.request("DELETE", f"/location/{int(loc['id'])}", ok_statuses=(200, 204, 400, 404))
             activate(c)
         else:
             log(f"no leftover location '{loc_name}'")
@@ -673,9 +677,14 @@ def cmd_account_register(c: Client, spec: Dict[str, Any]) -> Dict[str, Any]:
     role = str(spec["role_name"])
     ext = wanted_ext
     if not ext:
-        gen = c.request("POST", "/publicCloudInfo/generateExternalId",
-                        body={"awsAccountId": aws_id, "awsRoleName": role})[1]
-        ext = _account_external_id(gen) if isinstance(gen, dict) else ""
+        status_dbg, gen = c.request("POST", "/publicCloudInfo/generateExternalId",
+                        body={"awsAccountId": aws_id, "awsRoleName": role})
+        if isinstance(gen, dict):
+            ext = _account_external_id(gen)
+        elif isinstance(gen, str):
+            ext = gen.strip()
+        else:
+            ext = ""
         if not EXTERNAL_ID_RE.match(ext):
             raise ZtgwError("generateExternalId returned no usable external ID")
     payload = {
